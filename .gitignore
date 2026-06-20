@@ -1,0 +1,15 @@
+# Archivos del sistema macOS
+.DS_Store
+**/.DS_Store
+
+# Archivos grandes excluidos (exceden o se acercan al límite de 100MB de GitHub)
+drive-download-20260620T191406Z-3-001.zip
+*Video Demo.MP4
+**/*Video Demo.MP4
+Copia de Video Demo.MP4
+
+# Compilados de Xcode / build
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/

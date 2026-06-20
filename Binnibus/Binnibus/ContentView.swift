@@ -1,14 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════
-// BinniBus — ContentView.swift
+// BinniBus — ContentView_BinniBus_Final.swift
 // Versión Unificada FINAL · iOS 17+ · Xcode 15+
 //
-// ── CAMBIOS vs versión anterior ──────────────────────────────────
-//   • [i18n] Sistema de traducción global embebido:
-//       LocalizationManager + enum Idioma + archivos JSON
-//       Todas las cadenas visibles al usuario usan loc.t("clave")
-//   • [LOGO] BinniBusLogoView eliminado.
-//       Nuevo logotipo tipográfico TPILogoView / TPILogoCompactView
-//       "Transporte Público Inclusivo" con colores y línea decorativa
+// ── CAMBIOS CLAVE vs versión anterior ────────────────────────────
+//   • InicioTab rediseñado: bottom sheet desplegable 3 estados
+//     (pill → formulario → resultados) igual a diseño de imagen
+//   • Mapa filtra paradas discriminando por ruta seleccionada
+//   • Todos los botones son funcionales (intercambiar, limpiar,
+//     chips populares, micrófono, QR, drawer, cerrar)
+//   • ResultadoRuta muestra badge DIRECTO + tiempo estimado
+//   • Tap en resultado: activa línea, filtra mapa, cierra sheet
 // ═══════════════════════════════════════════════════════════════════
 //
 // ⚠️  PERMISOS REQUERIDOS en Info.plist:
@@ -20,212 +21,15 @@
 // CAPABILITIES:
 //   Wallet → PassKit / PKAddPassesViewController
 //   Background Modes → Location updates
-//
-// ARCHIVOS JSON REQUERIDOS (añadir al bundle del proyecto):
-//   es.json  ← cadenas en español
-//   en.json  ← cadenas en inglés
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
-import UIKit
 import MapKit
 import Speech
 import NaturalLanguage
 import PassKit
 import AVFoundation
 import Combine
-
-// ═══════════════════════════════════════════════════════════════════
-// MARK: - 0  SISTEMA i18n — LocalizationManager
-// ═══════════════════════════════════════════════════════════════════
-
-// ── Idiomas soportados ────────────────────────────────────────────
-enum Idioma: String, CaseIterable, Identifiable {
-    case espanol  = "Español"
-    case ingles   = "English"
-    case frances  = "Français"
-    case aleman   = "Deutsch"
-    case italiano = "Italiano"
-    case portugues = "Português"
-    case chino    = "中文"
-    case japones  = "日本語"
-    case coreano  = "한국어"
-    case arabe    = "العربية"
-    case hindi    = "हिन्दी"
-    case ruso     = "Русский"
-    case zapoteco = "Zapoteco (Sierra Sur)"
-
-    var id: String { rawValue }
-
-    /// Archivo JSON a cargar. Sin traducción propia → fallback "en".
-    var archivoJSON: String {
-        switch self {
-        case .espanol, .zapoteco: return "es"
-        case .ingles:             return "en"
-        default:                  return "en"   // añade "fr", "de"... aquí
-        }
-    }
-
-    /// Activa el "modo turista" (UI en inglés).
-    var esTurista: Bool {
-        switch self {
-        case .espanol, .zapoteco: return false
-        default:                  return true
-        }
-    }
-}
-
-// ── Motor de traducción ───────────────────────────────────────────
-final class LocalizationManager: ObservableObject {
-    @Published private(set) var idioma: Idioma = .espanol {
-        didSet { strings = traducciones(archivo: idioma.archivoJSON) }
-    }
-    private var strings:  [String: String] = [:]
-    private var fallback: [String: String] = [:]
-
-    init() {
-        fallback = traducciones(archivo: "es")
-        strings  = fallback
-    }
-
-    func cambiar(a nuevo: Idioma) {
-        guard nuevo != idioma else { return }
-        idioma = nuevo
-    }
-
-    /// Traduce una clave. Si no existe devuelve un texto legible para evitar claves técnicas en la UI.
-    func t(_ clave: String) -> String {
-        strings[clave] ?? fallback[clave] ?? textoLegible(desde: clave)
-    }
-
-    /// Variante con argumentos printf-style para cadenas con %@, %d, etc.
-    func t(_ clave: String, _ args: CVarArg...) -> String {
-        String(format: t(clave), arguments: args)
-    }
-
-    private func traducciones(archivo: String) -> [String: String] {
-        diccionarioBase.merging(cargar(archivo: archivo)) { _, externo in externo }
-    }
-
-    private func cargar(archivo: String) -> [String: String] {
-        guard
-            let url  = Bundle.main.url(forResource: archivo, withExtension: "json"),
-            let data = try? Data(contentsOf: url),
-            let dict = try? JSONDecoder().decode([String: String].self, from: data)
-        else { return [:] }
-        return dict
-    }
-
-    private func textoLegible(desde clave: String) -> String {
-        clave
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "a11y", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .capitalized
-    }
-
-    private let diccionarioBase: [String: String] = [
-        "LN": "ES",
-        "tab_inicio": "Inicio",
-        "tab_rutas": "Rutas",
-        "tab_notis": "Avisos",
-        "tab_perfil": "Perfil",
-        "offline_banner": "Sin conexión. Mostrando información guardada.",
-        "topbar_change_lang_a11y": "Cambiar idioma. Idioma actual: %@.",
-        "topbar_font_size_a11y": "Cambiar tamaño de texto. Tamaño actual: %@.",
-        "topbar_font_size_grande": "grande",
-        "topbar_font_size_normal": "normal",
-        "topbar_title_inicio": "Mapa",
-        "topbar_title_rutas": "Rutas",
-        "topbar_title_notis": "Avisos",
-        "topbar_title_perfil": "Mi cuenta",
-        "a11y_camion_en_ruta": "Camión en ruta %@",
-        "a11y_boton_sos": "Botón de emergencia",
-        "mapa_pin_inicio": "Inicio de ruta",
-        "mapa_pin_fin": "Fin de ruta",
-        "mapa_pin_origen": "Origen seleccionado",
-        "mapa_pin_destino": "Destino seleccionado",
-        "mapa_linea_activa_close_a11y": "Cerrar ruta seleccionada",
-        "buscador_pill_placeholder": "Planea tu viaje",
-        "buscador_header": "¿A dónde vas?",
-        "buscador_rutas_encontradas_singular": "%d ruta encontrada",
-        "buscador_rutas_encontradas_plural": "%d rutas encontradas",
-        "buscador_close_a11y": "Cerrar buscador de ruta",
-        "buscador_campo_origen_placeholder": "Origen",
-        "buscador_campo_destino_placeholder": "Destino",
-        "buscador_swap_a11y": "Intercambiar origen y destino",
-        "buscador_paradas_cercanas_title": "Paradas sugeridas",
-        "buscador_sugerencias_title": "Lugares populares",
-        "buscador_buscar_btn": "Buscar ruta",
-        "buscador_buscar_a11y": "Buscar ruta de %@ a %@",
-        "buscador_limpiar_btn": "Limpiar",
-        "buscador_clear_field_a11y": "Borrar texto",
-        "voice_start_a11y": "Iniciar dictado por voz",
-        "voice_stop_a11y": "Detener dictado por voz",
-        "resultado_directo_badge": "Directa",
-        "resultado_min_label": "min",
-        "qr_title": "Código de pago",
-        "qr_close": "Cerrar código de pago",
-        "qr_subtitle": "Muestra este código al validador para pagar tu viaje.",
-        "rutas_buscar_placeholder": "Buscar ruta, parada o destino",
-        "notis_demo_simular": "Simular viaje activo",
-        "notis_demo_terminar": "Terminar viaje activo",
-        "viaje_activo_label": "Viaje activo",
-        "viaje_activo_llega_en": "llega en",
-        "viaje_activo_min": "min",
-        "viaje_activo_alertar": "Avisarme",
-        "viaje_activo_on": "Aviso activo",
-        "viaje_activo_a11y": "Viaje activo. Tu camión llega aproximadamente en 3 minutos.",
-        "aviso_tipo_alerta": "Alerta",
-        "aviso_tipo_info": "Info",
-        "aviso_tipo_desvio": "Desvío",
-        "aviso_tipo_mantenimiento": "Servicio",
-        "aviso_hace_horas": "Hace %d h",
-        "aviso_hace_minutos": "Hace %d min",
-        "aviso_ahora": "Ahora",
-        "alert_sos_title": "Llamar a emergencias",
-        "alert_sos_confirm": "Llamar al 911",
-        "alert_sos_cancel": "Cancelar",
-        "alert_sos_message": "Se abrirá la app Teléfono para contactar a emergencias.",
-        "alert_wallet_title": "Tarjeta agregada",
-        "alert_wallet_ok": "Listo",
-        "alert_wallet_message": "Tu tarjeta quedó lista para usarla desde Wallet.",
-        "perfil_saldo_consultando": "Consultando saldo...",
-        "perfil_wallet_btn": "Agregar a Wallet",
-        "perfil_wallet_disponible": "Pago sin contacto disponible en unidades compatibles.",
-        "perfil_sos_btn": "Emergencia",
-        "perfil_sos_subtitle": "Llama al 911 si necesitas ayuda inmediata.",
-        "perfil_accion_tarjetas": "Tarjetas",
-        "perfil_accion_movimientos": "Movimientos",
-        "perfil_accion_pqr": "Reportes",
-        "perfil_accion_config": "Ajustes",
-        "parada_popup_sin_info": "Sin horarios disponibles por ahora.",
-        "parada_popup_col_linea": "Ruta",
-        "parada_popup_col_nombre": "Destino",
-        "parada_popup_col_min": "Llegada",
-        "parada_popup_leyenda_activo": "En servicio",
-        "parada_popup_leyenda_programado": "Programado",
-        "drawer_item_mapa": "Mapa",
-        "drawer_item_rutas": "Rutas",
-        "drawer_item_planea": "Planear viaje",
-        "drawer_item_perfil": "Perfil",
-        "drawer_item_config": "Configuración",
-        "drawer_item_favoritos": "Favoritos",
-        "drawer_item_cerrar_sesion": "Cerrar sesión",
-        "app_version": "BinniBus 1.0"
-    ]
-}
-
-// ── EnvironmentKey para inyección global ──────────────────────────
-private struct LocalizationKey: EnvironmentKey {
-    static let defaultValue = LocalizationManager()
-}
-extension EnvironmentValues {
-    var loc: LocalizationManager {
-        get { self[LocalizationKey.self] }
-        set { self[LocalizationKey.self] = newValue }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // MARK: - 1  PALETA DE COLOR
@@ -299,53 +103,112 @@ enum TabID { case inicio, rutas, notis, perfil }
 final class AppState: ObservableObject {
     @Published var tab: TabID             = .inicio
     @Published var escalaFuente: CGFloat  = 1.0
+    @Published var idioma: String         = "Español"
+    @Published var modoTurista: Bool      = false
     @Published var estaOffline: Bool      = false
     @Published var viajeActivo: Bool      = false
     @Published var camionPorLlegar: Bool  = false
     @Published var lineaSeleccionada: Linea? = nil
 
-    // i18n: el manager vive aquí para compartirlo en toda la app
-    let loc = LocalizationManager()
+    func t(_ key: String) -> String {
+        AppStrings.text(key, idioma: idioma)
+    }
 
-    var idioma: Idioma    { loc.idioma }
-    var modoTurista: Bool { loc.idioma.esTurista }
-
-    func cambiarIdioma(_ nuevo: Idioma) {
-        loc.cambiar(a: nuevo)
-        objectWillChange.send()
+    func routesFound(_ count: Int) -> String {
+        if idioma == "Español" || idioma == "Zapoteco (Sierra Sur)" {
+            return "\(count) ruta\(count == 1 ? "" : "s") encontrada\(count == 1 ? "" : "s")"
+        }
+        return "\(count) route\(count == 1 ? "" : "s") found"
     }
 }
 
-enum AppHaptics {
-    static func selection() {
-        let generator = UISelectionFeedbackGenerator()
-        generator.prepare()
-        generator.selectionChanged()
+enum AppStrings {
+    static func text(_ key: String, idioma: String) -> String {
+        guard idioma != "Español" && idioma != "Zapoteco (Sierra Sur)" else { return key }
+        return translations[key]?[idioma] ?? translations[key]?["English"] ?? key
     }
 
-    static func warningAlert() {
-        let notification = UINotificationFeedbackGenerator()
-        notification.prepare()
-        notification.notificationOccurred(.warning)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            let impact = UIImpactFeedbackGenerator(style: .heavy)
-            impact.prepare()
-            impact.impactOccurred(intensity: 1.0)
-        }
-    }
-
-    static func successAlert() {
-        let notification = UINotificationFeedbackGenerator()
-        notification.prepare()
-        notification.notificationOccurred(.success)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            let impact = UIImpactFeedbackGenerator(style: .medium)
-            impact.prepare()
-            impact.impactOccurred(intensity: 0.8)
-        }
-    }
+    private static let translations: [String: [String: String]] = [
+        "Inicio": ["English": "Home"],
+        "Rutas": ["English": "Routes"],
+        "Notis": ["English": "Alerts"],
+        "Perfil": ["English": "Profile"],
+        "Sin internet · Datos guardados": ["English": "No internet · Saved data"],
+        "Cambiar idioma. Actual:": ["English": "Change language. Current:"],
+        "Tamaño de letra": ["English": "Text size"],
+        "grande": ["English": "large"],
+        "normal": ["English": "normal"],
+        "Toca para cambiar.": ["English": "Tap to change."],
+        "¿A dónde vas hoy?": ["English": "Where are you going today?"],
+        "Cerrar buscador": ["English": "Close search"],
+        "¿Dónde estás? Ej: Zócalo": ["English": "Where are you? Ex: Zócalo"],
+        "¿A dónde vas? Ej: IMSS": ["English": "Where to? Ex: IMSS"],
+        "Intercambiar origen y destino": ["English": "Swap origin and destination"],
+        "Paradas disponibles": ["English": "Available stops"],
+        "Destinos populares": ["English": "Popular destinations"],
+        "Buscar mi ruta": ["English": "Find my route"],
+        "Buscar ruta de": ["English": "Find route from"],
+        "a": ["English": "to"],
+        "Limpiar": ["English": "Clear"],
+        "Limpiar búsqueda": ["English": "Clear search"],
+        "Borrar campo": ["English": "Clear field"],
+        "DIRECTO": ["English": "DIRECT"],
+        "min": ["English": "min"],
+        "Tu tarjeta BinniBus": ["English": "Your BinniBus card"],
+        "Muestra este código al subir al camión": ["English": "Show this code when boarding the bus"],
+        "Saldo": ["English": "Balance"],
+        "Sin saldo": ["English": "No balance"],
+        "Buscar línea o código...": ["English": "Search line or code..."],
+        "Avisos": ["English": "Alerts"],
+        "Terminar viaje demo": ["English": "End demo trip"],
+        "Simular viaje activo": ["English": "Simulate active trip"],
+        "Viaje activo — RC14 LABÁ": ["English": "Active trip — RC14 LABÁ"],
+        "Tu camión llega en ~3 min": ["English": "Your bus arrives in ~3 min"],
+        "Alertar": ["English": "Alert me"],
+        "Viaje activo. RC14 LABÁ llega en 3 minutos.": ["English": "Active trip. RC14 LABÁ arrives in 3 minutes."],
+        "Hace": ["English": "Ago"],
+        "Ahora": ["English": "Now"],
+        "🚨 Llamada de emergencia": ["English": "🚨 Emergency call"],
+        "Llamar al 911": ["English": "Call 911"],
+        "Cancelar": ["English": "Cancel"],
+        "Se marcará directamente al número de emergencias 911. ¿Confirmas?": ["English": "This will call emergency services at 911. Confirm?"],
+        "Entendido": ["English": "OK"],
+        "En producción, aquí se descarga el archivo .pkpass desde el servidor de BinniBus y se abre automáticamente Apple Wallet para agregarlo a tu iPhone.": ["English": "In production, the .pkpass file is downloaded from the BinniBus server and Apple Wallet opens automatically to add it to your iPhone."],
+        "Consultando...": ["English": "Checking..."],
+        "Agregar tarjeta BinniBus a Apple Wallet": ["English": "Add BinniBus card to Apple Wallet"],
+        "Agregar a Apple Wallet": ["English": "Add to Apple Wallet"],
+        "Tu tarjeta BinniBus siempre disponible en tu iPhone.": ["English": "Your BinniBus card is always available on your iPhone."],
+        "BOTÓN SOS": ["English": "SOS BUTTON"],
+        "Llama al número de emergencias": ["English": "Calls emergency services"],
+        "Botón SOS. Llama directamente al 911.": ["English": "SOS button. Calls 911 directly."],
+        "Mis\nTarjetas": ["English": "My\nCards"],
+        "Movimientos": ["English": "Activity"],
+        "Configuración": ["English": "Settings"],
+        "Sin información en tiempo real": ["English": "No real-time information"],
+        "Línea": ["English": "Line"],
+        "Nombre": ["English": "Name"],
+        "Servicio activo": ["English": "Active service"],
+        "Servicio programado": ["English": "Scheduled service"],
+        "Mapa": ["English": "Map"],
+        "Planea tu viaje": ["English": "Plan your trip"],
+        "Favoritos": ["English": "Favorites"],
+        "Cerrar sesión": ["English": "Sign out"],
+        "CÓDIGO": ["English": "CODE"],
+        "Detener dictado": ["English": "Stop dictation"],
+        "Buscar por voz": ["English": "Voice search"],
+        "ALERTA": ["English": "ALERT"],
+        "INFO": ["English": "INFO"],
+        "DESVÍO": ["English": "DETOUR"],
+        "SERVICIO": ["English": "SERVICE"],
+        "Cierre por Guelaguetza": ["English": "Guelaguetza road closure"],
+        "Las rutas RC14 y RA03 tendrán desvío por el Cerro del Fortín el sábado. Usa la parada alterna en Pino Suárez.": ["English": "Routes RC14 and RA03 will detour around Cerro del Fortín on Saturday. Use the alternate stop at Pino Suárez."],
+        "Mantenimiento Ruta RC01": ["English": "Route RC01 maintenance"],
+        "Ruta RC01 suspendida por mantenimiento preventivo. Reanuda el lunes.": ["English": "Route RC01 is suspended for preventive maintenance. Service resumes Monday."],
+        "Nueva tarifa aprobada": ["English": "New fare approved"],
+        "A partir del 1 de junio el precio base será $9.50 en todas las rutas urbanas.": ["English": "Starting June 1, the base fare will be $9.50 on all urban routes."],
+        "Alerta de lluvia intensa": ["English": "Heavy rain alert"],
+        "Se esperan retrasos de 10–20 min en todas las rutas. Espera bajo techo.": ["English": "Delays of 10–20 min are expected on all routes. Wait under cover."]
+    ]
 }
 
 private struct FontScaleKey: EnvironmentKey {
@@ -490,33 +353,19 @@ struct Linea: Identifiable, Codable {
     let id: UUID
     let codigo: String
     let nombre: String
-    let apodo: String
-    let icono: String
     let origen: String
     let destino: String
     let colorHex: String
     var busesActivos: Int
     var estaEnServicio: Bool
-    var transbordos: [String]
-
     var color: Color { Color(hex: colorHex) }
     var rutaCompleta: String { "\(origen) → \(destino)" }
 
-    init(id: UUID = UUID(), codigo: String, nombre: String, apodo: String = "",
-         icono: String = "bus", origen: String, destino: String,
-         colorHex: String, busesActivos: Int = 0, estaEnServicio: Bool = true,
-         transbordos: [String] = []) {
-        self.id = id
-        self.codigo = codigo
-        self.nombre = nombre
-        self.apodo = apodo
-        self.icono = icono
-        self.origen = origen
-        self.destino = destino
-        self.colorHex = colorHex
-        self.busesActivos = busesActivos
-        self.estaEnServicio = estaEnServicio
-        self.transbordos = transbordos
+    init(id: UUID = UUID(), codigo: String, nombre: String, origen: String, destino: String,
+         colorHex: String, busesActivos: Int = 0, estaEnServicio: Bool = true) {
+        self.id = id; self.codigo = codigo; self.nombre = nombre; self.origen = origen
+        self.destino = destino; self.colorHex = colorHex
+        self.busesActivos = busesActivos; self.estaEnServicio = estaEnServicio
     }
 }
 
@@ -576,22 +425,12 @@ enum TipoAviso {
         case .mantenimiento: return BB.teal
         }
     }
-    // Identificador interno estable (NO localizar — usado como ID en ForEach)
     var etiqueta: String {
         switch self {
         case .alerta:        return "ALERTA"
         case .informacion:   return "INFO"
         case .desvio:        return "DESVÍO"
         case .mantenimiento: return "SERVICIO"
-        }
-    }
-    // Clave JSON para localización
-    var etiquetaKey: String {
-        switch self {
-        case .alerta:        return "aviso_tipo_alerta"
-        case .informacion:   return "aviso_tipo_info"
-        case .desvio:        return "aviso_tipo_desvio"
-        case .mantenimiento: return "aviso_tipo_mantenimiento"
         }
     }
 }
@@ -622,11 +461,14 @@ struct TrayectoRuta {
 // MARK: - 5  DATOS MOCK
 // ═══════════════════════════════════════════════════════════════════
 
-extension Parada { //EN ESTA PARTE SE PONEN LOS PINGS DE LAS PARADAS
+extension Parada {
     static let mockParadas: [Parada] = [
         Parada(nombre: "Zócalo",
                latitud: 17.0628, longitud: -96.7232,
-               rutasProximas: [],
+               rutasProximas: [
+                RutaProxima(codigoLinea: "RC14", nombreLinea: "LABÁ",
+                            minutosLlegada: 4, estaActiva: true)
+               ],
                distanciaMetros: 120, tiempoLlegada: 3),
         Parada(nombre: "Manuel Fernández",
                latitud: 17.0665, longitud: -96.7203,
@@ -649,72 +491,35 @@ extension Parada { //EN ESTA PARTE SE PONEN LOS PINGS DE LAS PARADAS
                latitud: 17.0970, longitud: -96.7350,
                rutasProximas: [],
                distanciaMetros: 1100, tiempoLlegada: 2),
-        Parada(nombre: "Quetzacoaltl", latitud: 17.06787, longitud: -96.72540,
-               rutasProximas:[],
-              distanciaMetros: 1200, tiempoLlegada: 1),
-        Parada(nombre: "Marcos-Perez", latitud: 17.06974, longitud: -96.72505,
-               rutasProximas:[],
-               distanciaMetros: 1200, tiempoLlegada: 1),
-        Parada(nombre: "Quetzalcoatl", latitud: 17.06816, longitud: -96.72649,
-              rutasProximas: [],
-              distanciaMetros: 50, tiempoLlegada: 5),
-        Parada(nombre: "Asilo los Tamayo", latitud: 17.06663, longitud: -96.72765,
-              rutasProximas: [],
-              distanciaMetros: 50, tiempoLlegada: 3),
-        Parada(nombre: "Diaz Ordaz", latitud: 17.06176, longitud: -96.72841,
-               rutasProximas:[],
-               distanciaMetros: 50, tiempoLlegada: 3),
-        Parada(nombre: "Trujano", latitud: 17.06071, longitud: -96.72803,
-              rutasProximas: [],
-               distanciaMetros: 50, tiempoLlegada: 3),
-        Parada(nombre: "Las Casas", latitud: 17.05972, longitud: -96.72903,
-              rutasProximas: [],
-              distanciaMetros: 40, tiempoLlegada: 5)
     ]
 }
 
 extension Linea {
     static let mockLineas: [Linea] = [
-        Linea(codigo: "RC14", nombre: "LABÁ", apodo: "Flor",
-              icono: "RutaFlor",
-              origen: "YUROO VIGUERA", destino: "PANTEON MUNICIPAL",
-              colorHex: "#D81B8A", busesActivos: 2, estaEnServicio: true,
-              transbordos: ["RA03", "RC15"]),
-        Linea(codigo: "RC14", nombre: "LABÁ", apodo: "Flor",
-              icono: "RutaFlor",
-              origen: "PANTEON MUNICIPAL", destino: "YUROO VIGUERA",
-              colorHex: "#D81B8A", busesActivos: 2, estaEnServicio: true,
-              transbordos: ["RA03", "RC15"]),
-        Linea(codigo: "RA03", nombre: "LADXIDÓ", apodo: "Sol",
-              icono: "RutaSol",
-              origen: "DE AZUCENA", destino: "YUROO PARQUE DEL",
-              colorHex: "#F57C00", busesActivos: 1, estaEnServicio: true,
-              transbordos: ["RC14", "RC15"]),
-        Linea(codigo: "RC15", nombre: "YU NGTA'", apodo: "Monte",
-              icono: "RutaMonte",
+        Linea(codigo: "RC14", nombre: "LABÁ",
+              origen: "YUROO VIGUERA",    destino: "PANTEON MUNICIPA",
+              colorHex: "#D81B8A", busesActivos: 2, estaEnServicio: true),
+        Linea(codigo: "RC14", nombre: "LABÁ",
+              origen: "PANTEON MUNICIPA", destino: "YUROO VIGUERA",
+              colorHex: "#D81B8A", busesActivos: 2, estaEnServicio: true),
+        Linea(codigo: "RA03", nombre: "LADXIDÓ",
+              origen: "DE AZUCENA",       destino: "YUROO PARQUE DEL",
+              colorHex: "#F5A623", busesActivos: 1, estaEnServicio: true),
+        Linea(codigo: "RC15", nombre: "YU NGTA'",
               origen: "BASE MODULO AZUL", destino: "BASE SIMBOLOS PA",
-              colorHex: "#7B1FA2", busesActivos: 1, estaEnServicio: true,
-              transbordos: ["RC14", "RA03"]),
-        Linea(codigo: "RA17", nombre: "BAKKU NUNNI", apodo: "Palma",
-              icono: "RutaPalma",
+              colorHex: "#6B3FA0", busesActivos: 1, estaEnServicio: true),
+        Linea(codigo: "RA17", nombre: "BAKKU NUNNI",
               origen: "BASE COLONIA MON", destino: "BASE SIMBOLOS PA",
-              colorHex: "#1E90FF", busesActivos: 1, estaEnServicio: true,
-              transbordos: ["RC14", "RA19"]),
-        Linea(codigo: "RA19", nombre: "NANDÁ", apodo: "Árbol",
-              icono: "RutaArbol",
-              origen: "MONUMENTO", destino: "YUROO VIGUERA",
-              colorHex: "#00796B", busesActivos: 1, estaEnServicio: true,
-              transbordos: ["RC14", "RA17"]),
-        Linea(codigo: "RC01", nombre: "DUGUE", apodo: "Semilla",
-              icono: "RutaSemilla",
-              origen: "BASE DONAJI", destino: "BASE LA JOYA",
-              colorHex: "#8B1A3E", busesActivos: 0, estaEnServicio: false,
-              transbordos: ["RC14"]),
-        Linea(codigo: "RA01", nombre: "JNÒN", apodo: "Hoja",
-              icono: "RutaHoja",
-              origen: "BASE ESQUIPULAS", destino: "CENTRAL DE ABAST.",
-              colorHex: "#388E3C", busesActivos: 0, estaEnServicio: false,
-              transbordos: ["RC01"]),
+              colorHex: "#1E90FF", busesActivos: 1, estaEnServicio: true),
+        Linea(codigo: "RA19", nombre: "NANDÁ",
+              origen: "MONUMENTO",        destino: "YUROO VIGUERA",
+              colorHex: "#00BCD4", busesActivos: 1, estaEnServicio: true),
+        Linea(codigo: "RC01", nombre: "DUGUE",
+              origen: "BASE DONAJI",      destino: "BASE LA JOYA",
+              colorHex: "#8B1A3E", busesActivos: 0, estaEnServicio: false),
+        Linea(codigo: "RA01", nombre: "JNÒN",
+              origen: "BASE ESQUIPULAS",  destino: "CENTRAL DE ABAST.",
+              colorHex: "#388E3C", busesActivos: 0, estaEnServicio: false),
     ]
 }
 
@@ -860,7 +665,6 @@ struct ContentView: View {
                 MainView()
                     .environmentObject(appState)
                     .environment(\.fontScale, appState.escalaFuente)
-                    .environment(\.loc, appState.loc)        // i18n global
                     .transition(.opacity)
             }
         }
@@ -875,22 +679,21 @@ struct ContentView: View {
 
 struct MainView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.loc) var loc
 
     var body: some View {
         ZStack {
             TabView(selection: $appState.tab) {
                 InicioTab()
-                    .tabItem { Label(loc.t("tab_inicio"), systemImage: "house.fill") }
+                    .tabItem { Label(appState.t("Inicio"), systemImage: "house.fill") }
                     .tag(TabID.inicio)
                 RutasTab()
-                    .tabItem { Label(loc.t("tab_rutas"), systemImage: "map.fill") }
+                    .tabItem { Label(appState.t("Rutas"), systemImage: "map.fill") }
                     .tag(TabID.rutas)
                 NotisTab()
-                    .tabItem { Label(loc.t("tab_notis"), systemImage: "bell.badge.fill") }
+                    .tabItem { Label(appState.t("Notis"), systemImage: "bell.badge.fill") }
                     .tag(TabID.notis)
                 PerfilTab()
-                    .tabItem { Label(loc.t("tab_perfil"), systemImage: "person.crop.circle.fill") }
+                    .tabItem { Label(appState.t("Perfil"), systemImage: "person.crop.circle.fill") }
                     .tag(TabID.perfil)
             }
             .tint(BB.amarillo)
@@ -902,9 +705,6 @@ struct MainView: View {
                 VStack { OfflineBannerView(); Spacer() }
                     .ignoresSafeArea(edges: .top).zIndex(999)
             }
-        }
-        .onChange(of: appState.camionPorLlegar) { _, activo in
-            if activo { AppHaptics.warningAlert() }
         }
     }
 
@@ -936,12 +736,11 @@ struct TripAlertBorderView: View {
 }
 
 struct OfflineBannerView: View {
-    @Environment(\.loc) var loc
+    @EnvironmentObject var appState: AppState
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.slash").font(.system(size: 13, weight: .bold))
-            Text(loc.t("offline_banner"))
-                .font(.system(size: 13, weight: .semibold))
+            Text(appState.t("Sin internet · Datos guardados")).font(.system(size: 13, weight: .semibold))
         }
         .foregroundColor(.white)
         .frame(maxWidth: .infinity).padding(.vertical, 10)
@@ -955,52 +754,50 @@ struct OfflineBannerView: View {
 
 struct GlobalTopBar: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.loc) var loc
     let titulo: String
+
+    private let idiomas = [
+        "Español", "English", "Français", "Deutsch", "Italiano",
+        "Português", "中文", "日本語", "한국어", "العربية",
+        "हिन्दी", "Русский", "Zapoteco (Sierra Sur)"
+    ]
 
     var body: some View {
         ZStack(alignment: .bottom) {
             BB.headerGrad.ignoresSafeArea(edges: .top)
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-
-                    // ── Selector de idioma (enum tipado) ──────────
                     Menu {
-                        ForEach(Idioma.allCases) { idioma in
+                        ForEach(idiomas, id: \.self) { idioma in
                             Button {
-                                appState.cambiarIdioma(idioma)
+                                appState.idioma = idioma
+                                appState.modoTurista = (idioma != "Español" &&
+                                                        idioma != "Zapoteco (Sierra Sur)")
                             } label: {
                                 HStack {
-                                    Text(idioma.rawValue)
-                                    if appState.idioma == idioma {
-                                        Image(systemName: "checkmark")
-                                    }
+                                    Text(idioma)
+                                    if appState.idioma == idioma { Image(systemName: "checkmark") }
                                 }
                             }
                         }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "globe").font(.system(size: 15, weight: .bold))
-                            Text(loc.t("LN"))
-                                .font(.system(size: 11, weight: .black))
+                            Text("LG").font(.system(size: 11, weight: .black))
                         }
                         .foregroundColor(.white)
                         .padding(.horizontal, 9).padding(.vertical, 6)
                         .background(Color.white.opacity(0.2)).cornerRadius(8)
                     }
-                    .accessibilityLabel(loc.t("topbar_change_lang_a11y", appState.idioma.rawValue))
+                    .accessibilityLabel("\(appState.t("Cambiar idioma. Actual:")) \(appState.idioma)")
 
                     Spacer()
-
-                    // ── Logo TPI compacto ─────────────────────────
-                    TPILogoCompactView(size: 36)
-
+                    BinniBusLogoView(size: 36)
                     Text(titulo)
                         .font(.system(size: 17, weight: .black, design: .rounded))
                         .foregroundColor(.white)
                     Spacer()
 
-                    // ── Botón tamaño de fuente ────────────────────
                     Button {
                         withAnimation(.spring(response: 0.3)) {
                             appState.escalaFuente = appState.escalaFuente > 1.0 ? 1.0 : 1.25
@@ -1017,12 +814,7 @@ struct GlobalTopBar: View {
                         .padding(.horizontal, 9).padding(.vertical, 6)
                         .background(Color.white.opacity(0.2)).cornerRadius(8)
                     }
-                    .accessibilityLabel(
-                        loc.t("topbar_font_size_a11y",
-                              appState.escalaFuente > 1
-                              ? loc.t("topbar_font_size_grande")
-                              : loc.t("topbar_font_size_normal"))
-                    )
+                    .accessibilityLabel("\(appState.t("Tamaño de letra")): \(appState.t(appState.escalaFuente > 1 ? "grande" : "normal")). \(appState.t("Toca para cambiar."))")
                 }
                 .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
             }
@@ -1036,6 +828,7 @@ struct GlobalTopBar: View {
 // MARK: - 9  TAB INICIO  (Mapa + Bottom Sheet Buscador)
 // ═══════════════════════════════════════════════════════════════════
 
+/// Modelo de resultado de búsqueda de ruta.
 struct ResultadoRuta: Identifiable {
     let id = UUID()
     let linea: Linea
@@ -1052,9 +845,9 @@ struct ResultadoRuta: Identifiable {
 struct InicioTab: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.fontScale) var fs
-    @Environment(\.loc) var loc
     @StateObject private var speech = SpeechManager()
 
+    // ── Estado del mapa ──────────────────────────────────────────
     @State private var paradaSeleccionada: Parada?
     @State private var mostrarPopup        = false
     @State private var mostrarMenuDrawer   = false
@@ -1064,6 +857,7 @@ struct InicioTab: View {
             span:   MKCoordinateSpan(latitudeDelta: 0.025, longitudeDelta: 0.025))
     )
 
+    // ── Estado del buscador ──────────────────────────────────────
     @State private var mostrarBuscador      = false
     @State private var textoBuscadorOrigen  = ""
     @State private var textoBuscadorDestino = ""
@@ -1071,13 +865,13 @@ struct InicioTab: View {
     @State private var resultadosRuta: [ResultadoRuta] = []
     @State private var buscadorExpandido    = false
     @State private var mostrarQR            = false
-    @State private var mostrarSimulacion    = false
 
     enum CampoBuscador { case origen, destino }
 
     private let sugerencias = ["Zócalo", "Abastos", "UABJO", "Aeropuerto",
                                 "IMSS", "Cinco Señores", "Mercado"]
 
+    // Paradas visibles: si hay línea activa, sólo las de esa línea
     var paradasVisibles: [Parada] {
         guard let linea = appState.lineaSeleccionada else { return Parada.mockParadas }
         return Parada.mockParadas.filter { parada in
@@ -1105,6 +899,7 @@ struct InicioTab: View {
 
             // ── 1. MAPA ──────────────────────────────────────────
             Map(position: $camaraMapa) {
+                // Solo paradas de la ruta activa (o todas si no hay selección)
                 ForEach(paradasVisibles) { p in
                     Annotation(p.nombre, coordinate: p.coordenada, anchor: .bottom) {
                         MapPinView()
@@ -1114,30 +909,31 @@ struct InicioTab: View {
                             }
                     }
                 }
+                // Trayecto + marcador de camión
                 if let t = trayectoActivo, let l = appState.lineaSeleccionada {
                     MapPolyline(coordinates: t.coordenadas)
                         .stroke(l.color,
                                 style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
-                    Annotation(loc.t("a11y_camion_en_ruta", l.codigo),
-                               coordinate: t.posicionCamion, anchor: .center) {
+                    Annotation("Camión \(l.codigo)", coordinate: t.posicionCamion, anchor: .center) {
                         CamionMarkerView(color: l.color)
                     }
-                    Annotation(loc.t("mapa_pin_inicio"), coordinate: t.coordenadas.first!, anchor: .center) {
+                    Annotation("Inicio", coordinate: t.coordenadas.first!, anchor: .center) {
                         Circle().fill(l.color).frame(width: 10, height: 10)
                             .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
-                    Annotation(loc.t("mapa_pin_fin"), coordinate: t.coordenadas.last!, anchor: .center) {
+                    Annotation("Fin", coordinate: t.coordenadas.last!, anchor: .center) {
                         Circle().fill(Color.white).frame(width: 10, height: 10)
                             .overlay(Circle().stroke(l.color, lineWidth: 2.5))
                     }
                 }
+                // Pines de búsqueda activa
                 if let po = paradaConNombre(textoBuscadorOrigen) {
-                    Annotation(loc.t("mapa_pin_origen"), coordinate: po.coordenada, anchor: .bottom) {
+                    Annotation("Origen", coordinate: po.coordenada, anchor: .bottom) {
                         OrigenDestinoPin(tipo: .origen)
                     }
                 }
                 if let pd = paradaConNombre(textoBuscadorDestino) {
-                    Annotation(loc.t("mapa_pin_destino"), coordinate: pd.coordenada, anchor: .bottom) {
+                    Annotation("Destino", coordinate: pd.coordenada, anchor: .bottom) {
                         OrigenDestinoPin(tipo: .destino)
                     }
                 }
@@ -1147,7 +943,7 @@ struct InicioTab: View {
             .ignoresSafeArea()
 
             // ── 2. TOP BAR ───────────────────────────────────────
-            GlobalTopBar(titulo: loc.t("topbar_title_inicio"))
+            GlobalTopBar(titulo: "BinniBus")
 
             // ── 3. BOTONES FLOTANTES ─────────────────────────────
             VStack {
@@ -1222,9 +1018,6 @@ struct InicioTab: View {
                             buscadorExpandido = false
                         }
                         animarCamara()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            mostrarSimulacion = true
-                        }
                     },
                     onLimpiar: limpiarBuscador
                 )
@@ -1245,7 +1038,6 @@ struct InicioTab: View {
             .onChange(of: appState.lineaSeleccionada?.id) { _, _ in animarCamara() }
             .onAppear { speech.pedirPermisos() }
             .sheet(isPresented: $mostrarQR) { QRSheet() }
-            .sheet(isPresented: $mostrarSimulacion) { TripSimulationView() }
         }
     }
 
@@ -1343,6 +1135,7 @@ struct OrigenDestinoPin: View {
 }
 
 struct BuscadorRutaSheet: View {
+    @EnvironmentObject var appState: AppState
     @Binding var estaAbierto:   Bool
     @Binding var expandido:     Bool
     @Binding var textoOrigen:   String
@@ -1360,8 +1153,6 @@ struct BuscadorRutaSheet: View {
     let onSeleccionarResultado: (ResultadoRuta) -> Void
     let onLimpiar:              () -> Void
 
-    @Environment(\.loc) var loc
-
     private var alturaSheet: CGFloat {
         if !estaAbierto  { return 72 }
         if expandido     { return availableHeight * 0.78 }
@@ -1370,6 +1161,7 @@ struct BuscadorRutaSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Handle
             Capsule()
                 .fill(Color.gray.opacity(0.35))
                 .frame(width: 40, height: 5)
@@ -1385,7 +1177,7 @@ struct BuscadorRutaSheet: View {
                         Image(systemName: "bus.fill")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.white)
-                        Text(loc.t("buscador_pill_placeholder"))
+                        Text(appState.t("¿A dónde vas hoy?"))
                             .font(.system(size: 16, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                         Spacer()
@@ -1402,14 +1194,11 @@ struct BuscadorRutaSheet: View {
                 // CABECERA ABIERTO
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(loc.t("buscador_header"))
+                        Text(appState.t("¿A dónde vas hoy?"))
                             .font(.system(size: 17, weight: .black, design: .rounded))
                             .foregroundColor(BB.grisOscuro)
                         if !resultados.isEmpty {
-                            Text(loc.t(resultados.count == 1
-                                       ? "buscador_rutas_encontradas_singular"
-                                       : "buscador_rutas_encontradas_plural",
-                                       resultados.count))
+                            Text(appState.routesFound(resultados.count))
                                 .font(.system(size: 12)).foregroundColor(BB.grisMedio)
                         }
                     }
@@ -1423,7 +1212,7 @@ struct BuscadorRutaSheet: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 26)).foregroundColor(BB.grisUI)
                     }
-                    .accessibilityLabel(loc.t("buscador_close_a11y"))
+                    .accessibilityLabel(appState.t("Cerrar buscador"))
                 }
                 .padding(.horizontal, 18).padding(.bottom, 12)
 
@@ -1437,7 +1226,7 @@ struct BuscadorRutaSheet: View {
                                 estaActivo:  campoActivo == .origen,
                                 tipo:        .origen,
                                 speech:      speech,
-                                placeholder: loc.t("buscador_campo_origen_placeholder")
+                                placeholder: appState.t("¿Dónde estás? Ej: Zócalo")
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { campoActivo = .origen }
@@ -1468,7 +1257,7 @@ struct BuscadorRutaSheet: View {
                                             .clipShape(Circle())
                                             .shadow(color: BB.primary.opacity(0.15), radius: 4, y: 2)
                                     }
-                                    .accessibilityLabel(loc.t("buscador_swap_a11y"))
+                                    .accessibilityLabel(appState.t("Intercambiar origen y destino"))
                                     .padding(.trailing, 18)
                                 }
                             }
@@ -1479,7 +1268,7 @@ struct BuscadorRutaSheet: View {
                                 estaActivo:  campoActivo == .destino,
                                 tipo:        .destino,
                                 speech:      speech,
-                                placeholder: loc.t("buscador_campo_destino_placeholder")
+                                placeholder: appState.t("¿A dónde vas? Ej: IMSS")
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { campoActivo = .destino }
@@ -1500,10 +1289,11 @@ struct BuscadorRutaSheet: View {
                             if !textoOrigen.isEmpty || !textoDestino.isEmpty {
                                 if !paradasSugeridas.isEmpty {
                                     VStack(alignment: .leading, spacing: 0) {
-                                        Text(loc.t("buscador_paradas_cercanas_title"))
+                                        Text(appState.t("Paradas disponibles"))
                                             .font(.system(size: 13, weight: .semibold))
                                             .foregroundColor(BB.grisMedio)
                                             .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 6)
+
                                         ForEach(paradasSugeridas) { parada in
                                             Button { onSeleccionarParada(parada) } label: {
                                                 HStack(spacing: 12) {
@@ -1539,10 +1329,11 @@ struct BuscadorRutaSheet: View {
                             } else {
                                 // Chips de destinos populares
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text(loc.t("buscador_sugerencias_title"))
+                                    Text(appState.t("Destinos populares"))
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(BB.grisMedio)
                                         .padding(.horizontal, 18)
+
                                     ScrollView(.horizontal, showsIndicators: false) {
                                         HStack(spacing: 8) {
                                             ForEach(sugerencias, id: \.self) { s in
@@ -1581,7 +1372,7 @@ struct BuscadorRutaSheet: View {
                             Button(action: onBuscar) {
                                 HStack(spacing: 12) {
                                     Image(systemName: "bus.fill").font(.system(size: 18, weight: .bold))
-                                    Text(loc.t("buscador_buscar_btn"))
+                                    Text(appState.t("Buscar mi ruta"))
                                         .font(.system(size: 17, weight: .black, design: .rounded))
                                 }
                                 .foregroundColor(.white)
@@ -1590,17 +1381,14 @@ struct BuscadorRutaSheet: View {
                                 .shadow(color: BB.primary.opacity(0.4), radius: 10, y: 5)
                             }
                             .padding(.horizontal, 16)
-                            .accessibilityLabel(loc.t("buscador_buscar_a11y", textoOrigen, textoDestino))
+                            .accessibilityLabel("\(appState.t("Buscar ruta de")) \(textoOrigen) \(appState.t("a")) \(textoDestino)")
                         }
 
                         // RESULTADOS
                         if !resultados.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack {
-                                    Text(loc.t(resultados.count == 1
-                                               ? "buscador_rutas_encontradas_singular"
-                                               : "buscador_rutas_encontradas_plural",
-                                               resultados.count))
+                                    Text(appState.routesFound(resultados.count))
                                         .font(.system(size: 14, weight: .bold))
                                         .foregroundColor(BB.grisOscuro)
                                     Spacer()
@@ -1610,12 +1398,11 @@ struct BuscadorRutaSheet: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: "xmark.circle").font(.system(size: 13))
-                                            Text(loc.t("buscador_limpiar_btn"))
-                                                .font(.system(size: 13, weight: .semibold))
+                                            Text(appState.t("Limpiar")).font(.system(size: 13, weight: .semibold))
                                         }
                                         .foregroundColor(BB.primary)
                                     }
-                                    .accessibilityLabel(loc.t("buscador_limpiar_btn"))
+                                    .accessibilityLabel(appState.t("Limpiar búsqueda"))
                                 }
                                 .padding(.horizontal, 18)
 
@@ -1647,13 +1434,12 @@ struct BuscadorRutaSheet: View {
 }
 
 struct CampoRutaView: View {
+    @EnvironmentObject var appState: AppState
     @Binding var texto: String
     let estaActivo:    Bool
     let tipo:          OrigenDestinoPin.Tipo
     @ObservedObject var speech: SpeechManager
     let placeholder:   String
-
-    @Environment(\.loc) var loc
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1670,7 +1456,7 @@ struct CampoRutaView: View {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(BB.grisUI).font(.system(size: 16))
                 }
-                .accessibilityLabel(loc.t("buscador_clear_field_a11y"))
+                .accessibilityLabel(appState.t("Borrar campo"))
             }
             Button { speech.toggle { resultado in texto = resultado } } label: {
                 Image(systemName: speech.estaEscuchando ? "mic.fill" : "mic")
@@ -1679,9 +1465,7 @@ struct CampoRutaView: View {
                     .scaleEffect(speech.estaEscuchando ? 1.2 : 1.0)
                     .animation(.easeInOut(duration: 0.2), value: speech.estaEscuchando)
             }
-            .accessibilityLabel(speech.estaEscuchando
-                                ? loc.t("voice_stop_a11y")
-                                : loc.t("voice_start_a11y"))
+            .accessibilityLabel(appState.t(speech.estaEscuchando ? "Detener dictado" : "Buscar por voz"))
         }
         .padding(.horizontal, 14).padding(.vertical, 13)
         .background(estaActivo ? BB.fondoRosa.opacity(0.6) : Color.clear)
@@ -1690,8 +1474,8 @@ struct CampoRutaView: View {
 }
 
 struct ResultadoRutaCardView: View {
+    @EnvironmentObject var appState: AppState
     let resultado: ResultadoRuta
-    @Environment(\.loc) var loc
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1701,7 +1485,7 @@ struct ResultadoRutaCardView: View {
                     Text(resultado.linea.nombre)
                         .font(.system(size: 15, weight: .bold)).foregroundColor(BB.grisOscuro)
                     if resultado.esDirecta {
-                        Text(loc.t("resultado_directo_badge"))
+                        Text(appState.t("DIRECTO"))
                             .font(.system(size: 9, weight: .black)).foregroundColor(.white)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(BB.verde).cornerRadius(5)
@@ -1716,9 +1500,10 @@ struct ResultadoRutaCardView: View {
             VStack(spacing: 2) {
                 Text("~\(resultado.tiempoEstimadoMin)")
                     .font(.system(size: 20, weight: .black)).foregroundColor(BB.grisOscuro)
-                Text(loc.t("resultado_min_label"))
-                    .font(.system(size: 10)).foregroundColor(BB.grisUI)
+                Text(appState.t("min")).font(.system(size: 10)).foregroundColor(BB.grisUI)
             }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold)).foregroundColor(BB.grisUI.opacity(0.5))
         }
         .padding(14)
         .background(Color.white)
@@ -1727,22 +1512,22 @@ struct ResultadoRutaCardView: View {
             .stroke(resultado.linea.color.opacity(0.3), lineWidth: 1.5))
         .shadow(color: .black.opacity(0.05), radius: 6, y: 3)
         .accessibilityLabel(
-            "Línea \(resultado.linea.codigo) \(resultado.linea.nombre). " +
-            "\(resultado.esDirecta ? loc.t("resultado_directo_badge") + "." : "") " +
-            "Tiempo estimado \(resultado.tiempoEstimadoMin) \(loc.t("resultado_min_label"))."
+            "\(appState.t("Línea")) \(resultado.linea.codigo) \(resultado.linea.nombre). " +
+            "\(resultado.esDirecta ? appState.t("DIRECTO") + ". " : "")" +
+            "\(resultado.tiempoEstimadoMin) \(appState.t("min"))."
         )
     }
 }
 
 struct QRSheet: View {
     @Environment(\.dismiss) var dismiss
-    @Environment(\.loc) var loc
+    @EnvironmentObject var appState: AppState
     let usuario = DatosMock.usuario
 
     var body: some View {
         VStack(spacing: 24) {
             HStack {
-                Text(loc.t("qr_title"))
+                Text(appState.t("Tu tarjeta BinniBus"))
                     .font(.system(size: 20, weight: .black, design: .rounded))
                     .foregroundColor(BB.grisOscuro)
                 Spacer()
@@ -1750,7 +1535,6 @@ struct QRSheet: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 26)).foregroundColor(BB.grisUI)
                 }
-                .accessibilityLabel(loc.t("qr_close"))
             }
             .padding(.horizontal, 24).padding(.top, 28)
 
@@ -1767,14 +1551,13 @@ struct QRSheet: View {
                 }
             }
 
-            Text(loc.t("qr_subtitle"))
+            Text(appState.t("Muestra este código al subir al camión"))
                 .font(.system(size: 14)).foregroundColor(BB.grisMedio).multilineTextAlignment(.center)
 
             HStack(spacing: 8) {
                 Image(systemName: "dollarsign.circle.fill")
                     .font(.system(size: 22)).foregroundColor(BB.amarillo)
-                Text(usuario.saldo.map { String(format: "Saldo: $%.2f MXN", $0) }
-                     ?? loc.t("perfil_saldo_consultando"))
+                Text(usuario.saldo.map { String(format: "\(appState.t("Saldo")): $%.2f MXN", $0) } ?? appState.t("Sin saldo"))
                     .font(.system(size: 16, weight: .bold)).foregroundColor(BB.grisOscuro)
             }
             .padding(.horizontal, 24).padding(.vertical, 14)
@@ -1787,446 +1570,12 @@ struct QRSheet: View {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MARK: - 10  SIMULACION DE VIAJE
-// ═══════════════════════════════════════════════════════════════════
-
-enum FaseViaje: Equatable {
-    case esperandoCamion(segundosRestantes: Int)
-    case viajando(paradasRestantes: Int, segundosParaTrasbordo: Int)
-    case esperandoSegundoCamion(instruccion: String, segundosRestantes: Int)
-    case viajeFinal(paradasRestantes: Int)
-    case alertaSubir
-    case alertaBajar
-    case alertaLlegada
-    case terminado
-
-    var esAlerta: Bool {
-        switch self {
-        case .alertaSubir, .alertaBajar, .alertaLlegada: return true
-        default: return false
-        }
-    }
-
-    var icono: String {
-        switch self {
-        case .esperandoCamion: return "bus.fill"
-        case .alertaSubir: return "arrow.up.circle.fill"
-        case .viajando: return "bus.fill"
-        case .alertaBajar: return "arrow.down.circle.fill"
-        case .esperandoSegundoCamion: return "mappin.and.ellipse"
-        case .viajeFinal: return "bus.fill"
-        case .alertaLlegada: return "checkmark.circle.fill"
-        case .terminado: return "flag.checkered"
-        }
-    }
-
-    var titulo: String {
-        switch self {
-        case .esperandoCamion: return "Espera tu camion"
-        case .alertaSubir: return "SUBE AHORA"
-        case .viajando: return "En camino"
-        case .alertaBajar: return "BAJA AQUI"
-        case .esperandoSegundoCamion: return "Espera el segundo camion"
-        case .viajeFinal: return "Ultimo tramo"
-        case .alertaLlegada: return "LLEGASTE"
-        case .terminado: return "Viaje completado"
-        }
-    }
-
-    var subtitulo: String {
-        switch self {
-        case .esperandoCamion(let segundos):
-            return segundos > 0
-                ? "El camion llega en \(segundos) segundo\(segundos == 1 ? "" : "s")"
-                : "El camion esta llegando"
-        case .alertaSubir:
-            return "El camion esta frente a ti. Sube por la puerta delantera."
-        case .viajando(let paradas, let segundos):
-            return "Faltan \(paradas) parada\(paradas == 1 ? "" : "s") - Trasbordo en \(formatoTiempo(segundos))"
-        case .alertaBajar:
-            return "Baja en esta parada: Cinco Senores. Camina 30 m hacia la derecha."
-        case .esperandoSegundoCamion(let instruccion, let segundos):
-            return "\(instruccion)\nEl camion llega en \(formatoTiempo(segundos))"
-        case .viajeFinal(let paradas):
-            return "Faltan \(paradas) parada\(paradas == 1 ? "" : "s") para tu destino."
-        case .alertaLlegada:
-            return "Has llegado a tu destino. Baja con cuidado."
-        case .terminado:
-            return "Tu viaje fue de 60 segundos en modo demo. Buen dia."
-        }
-    }
-
-    private func formatoTiempo(_ segundos: Int) -> String {
-        segundos >= 60
-            ? "\(segundos / 60) min \(segundos % 60) seg"
-            : "\(segundos) seg"
-    }
-}
-
-@MainActor
-final class TripSimulationVM: ObservableObject {
-    @Published private(set) var fase: FaseViaje = .esperandoCamion(segundosRestantes: 10)
-    @Published private(set) var progreso: Double = 0
-    @Published private(set) var tiempoTotal: Int = 0
-    @Published private(set) var viajeTerminado: Bool = false
-
-    private let duracionTotal = 60
-    private var hapticFired = false
-    private var timer: Timer?
-
-    func iniciar() {
-        detener()
-        tiempoTotal = 0
-        progreso = 0
-        hapticFired = false
-        viajeTerminado = false
-        actualizarFase()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.tick()
-            }
-        }
-    }
-
-    func detener() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    private func tick() {
-        guard tiempoTotal < duracionTotal else {
-            fase = .terminado
-            progreso = 1
-            viajeTerminado = true
-            detener()
-            return
-        }
-
-        tiempoTotal += 1
-        progreso = Double(tiempoTotal) / Double(duracionTotal)
-        actualizarFase()
-    }
-
-    private func actualizarFase() {
-        let nuevaFase: FaseViaje
-
-        if tiempoTotal >= 60 {
-            nuevaFase = .terminado
-        } else if tiempoTotal >= 57 {
-            nuevaFase = .alertaLlegada
-        } else if tiempoTotal >= 45 {
-            let paradas = max(1, 4 - (tiempoTotal - 45) / 3)
-            nuevaFase = .viajeFinal(paradasRestantes: paradas)
-        } else if tiempoTotal >= 33 {
-            let segundos = 45 - tiempoTotal
-            let instruccion = "Espera en la esquina bajo el poste verde. El camion RA03 - LADXIDO."
-            nuevaFase = .esperandoSegundoCamion(instruccion: instruccion, segundosRestantes: segundos)
-        } else if tiempoTotal >= 30 {
-            nuevaFase = .alertaBajar
-        } else if tiempoTotal >= 13 {
-            let segundosParaTrasbordo = 30 - tiempoTotal
-            let paradas = max(1, 4 - (tiempoTotal - 13) / 4)
-            nuevaFase = .viajando(paradasRestantes: paradas, segundosParaTrasbordo: segundosParaTrasbordo)
-        } else if tiempoTotal >= 10 {
-            nuevaFase = .alertaSubir
-        } else {
-            nuevaFase = .esperandoCamion(segundosRestantes: 10 - tiempoTotal)
-        }
-
-        if nuevaFase.esAlerta && !fase.esAlerta {
-            hapticFired = false
-        }
-        if nuevaFase.esAlerta && !hapticFired {
-            dispararHaptica(tipo: nuevaFase)
-            hapticFired = true
-        }
-
-        fase = nuevaFase
-        viajeTerminado = nuevaFase == .terminado
-    }
-
-    private func dispararHaptica(tipo: FaseViaje) {
-        switch tipo {
-        case .alertaSubir, .alertaBajar:
-            AppHaptics.warningAlert()
-        case .alertaLlegada:
-            AppHaptics.successAlert()
-        default:
-            break
-        }
-    }
-}
-
-struct TripSimulationView: View {
-    @StateObject private var vm = TripSimulationVM()
-    @EnvironmentObject private var appState: AppState
-    @Environment(\.dismiss) private var dismiss
-    @State private var pulsandoBorde = false
-
-    private let guinda = Color(hex: "#8C1050")
-    private let amarillo = Color(hex: "#F5C518")
-    private let fondo = Color(hex: "#FAF0F5")
-
-    var body: some View {
-        ZStack {
-            fondo.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                topBar
-                progressBar
-                timelineMini.padding(.top, 8)
-                Spacer()
-                iconoFase
-                Spacer()
-                tarjetaInfo
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 32)
-            }
-
-            if vm.fase.esAlerta {
-                alertaBorderOverlay
-            }
-        }
-        .onAppear {
-            appState.viajeActivo = true
-            vm.iniciar()
-        }
-        .onDisappear {
-            vm.detener()
-            appState.camionPorLlegar = false
-        }
-        .onChange(of: vm.fase) { _, fase in
-            withAnimation(.spring(response: 0.3)) {
-                appState.camionPorLlegar = fase.esAlerta && fase != .alertaLlegada
-                if fase == .terminado {
-                    appState.viajeActivo = false
-                }
-            }
-        }
-    }
-
-    private var topBar: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(hex: "#6A0D3F"), guinda],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            HStack {
-                Button {
-                    vm.detener()
-                    appState.viajeActivo = false
-                    appState.camionPorLlegar = false
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(Color.white.opacity(0.2))
-                        .clipShape(Circle())
-                }
-                .accessibilityLabel("Cerrar simulacion")
-
-                Spacer()
-                VStack(spacing: 2) {
-                    Text("Simulacion de viaje")
-                        .font(.system(size: 16, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
-                    if let linea = appState.lineaSeleccionada {
-                        Text("\(linea.codigo) \(linea.nombre)")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(amarillo)
-                    }
-                }
-                Spacer()
-                Text("\(vm.tiempoTotal)s")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(amarillo)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.15))
-                    .cornerRadius(8)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
-        }
-        .frame(height: 88)
-        .ignoresSafeArea(edges: .top)
-    }
-
-    private var progressBar: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.4))
-                    .frame(height: 6)
-                Rectangle()
-                    .fill(vm.fase.esAlerta ? Color(hex: "#E53935") : amarillo)
-                    .frame(width: geo.size.width * vm.progreso, height: 6)
-                    .animation(.linear(duration: 0.9), value: vm.progreso)
-            }
-        }
-        .frame(height: 6)
-    }
-
-    private var timelineMini: some View {
-        let hitos: [(icono: String, segundo: Int, etiqueta: String)] = [
-            ("clock", 0, "Espera"),
-            ("arrow.up.circle", 10, "Sube"),
-            ("bus", 13, "Viaje"),
-            ("arrow.down.circle", 30, "Baja"),
-            ("mappin", 33, "Espera"),
-            ("bus", 45, "Ultimo"),
-            ("checkmark.circle", 57, "Ya")
-        ]
-
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(Array(hitos.enumerated()), id: \.offset) { index, hito in
-                    HStack(spacing: 0) {
-                        VStack(spacing: 4) {
-                            Image(systemName: hito.icono)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(vm.tiempoTotal >= hito.segundo ? amarillo : Color.white.opacity(0.4))
-                            Text(hito.etiqueta)
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(vm.tiempoTotal >= hito.segundo ? .white : Color.white.opacity(0.4))
-                        }
-                        .frame(width: 52)
-
-                        if index < hitos.count - 1 {
-                            Rectangle()
-                                .fill(vm.tiempoTotal >= hitos[index + 1].segundo ? amarillo : Color.white.opacity(0.25))
-                                .frame(height: 2)
-                                .frame(minWidth: 12)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        .background(Color(hex: "#6A0D3F").opacity(0.6))
-        .frame(height: 52)
-    }
-
-    private var iconoFase: some View {
-        ZStack {
-            Circle()
-                .fill(vm.fase.esAlerta ? guinda : guinda.opacity(0.12))
-                .frame(width: 140, height: 140)
-                .overlay(
-                    Circle()
-                        .stroke(vm.fase.esAlerta ? Color(hex: "#E53935") : guinda.opacity(0.25), lineWidth: vm.fase.esAlerta ? 4 : 2)
-                )
-                .scaleEffect(vm.fase.esAlerta ? 1.08 : 1.0)
-                .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: vm.fase.esAlerta)
-
-            Image(systemName: vm.fase.icono)
-                .font(.system(size: 56, weight: .bold))
-                .foregroundColor(vm.fase.esAlerta ? .white : guinda)
-                .scaleEffect(vm.fase.esAlerta ? 1.15 : 1.0)
-                .animation(.spring(response: 0.4), value: vm.fase.titulo)
-        }
-        .animation(.easeInOut(duration: 0.35), value: vm.fase.esAlerta)
-    }
-
-    private var tarjetaInfo: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(vm.fase.titulo)
-                    .font(.system(size: 24, weight: .black, design: .rounded))
-                    .foregroundColor(vm.fase.esAlerta ? .white : Color(hex: "#1A1A1A"))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 10)
-            .background(vm.fase.esAlerta ? guinda : Color.white.opacity(0))
-
-            Rectangle()
-                .fill(vm.fase.esAlerta ? Color.white.opacity(0.3) : guinda.opacity(0.15))
-                .frame(height: 1.5)
-                .padding(.horizontal, 20)
-
-            Text(vm.fase.subtitulo)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(vm.fase.esAlerta ? Color.white.opacity(0.9) : Color(hex: "#2D1F28"))
-                .multilineTextAlignment(.leading)
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
-                .background(vm.fase.esAlerta ? Color(hex: "#6D1230") : Color.white)
-
-            if vm.viajeTerminado {
-                Button {
-                    vm.detener()
-                    appState.viajeActivo = false
-                    appState.camionPorLlegar = false
-                    dismiss()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 20))
-                        Text("Cerrar simulacion")
-                            .font(.system(size: 17, weight: .black, design: .rounded))
-                    }
-                    .foregroundColor(Color(hex: "#1A1A1A"))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 54)
-                    .background(amarillo)
-                }
-            } else {
-                HStack {
-                    Image(systemName: "timer")
-                        .font(.system(size: 13))
-                        .foregroundColor(Color(hex: "#7A5C6E"))
-                    Text("Segundo \(vm.tiempoTotal) de 60")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color(hex: "#7A5C6E"))
-                    Spacer()
-                    Text("\(Int(vm.progreso * 100))%")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(guinda)
-                }
-                .padding(.horizontal, 20)
-                .frame(height: 44)
-                .background(fondo)
-            }
-        }
-        .background(Color.white)
-        .cornerRadius(20)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(vm.fase.esAlerta ? guinda : guinda.opacity(0.15), lineWidth: vm.fase.esAlerta ? 2.5 : 1)
-        )
-        .shadow(color: guinda.opacity(vm.fase.esAlerta ? 0.35 : 0.08), radius: vm.fase.esAlerta ? 20 : 8, y: vm.fase.esAlerta ? 8 : 3)
-        .animation(.easeInOut(duration: 0.3), value: vm.fase.esAlerta)
-    }
-
-    private var alertaBorderOverlay: some View {
-        Rectangle()
-            .strokeBorder(guinda.opacity(pulsandoBorde ? 1.0 : 0.5), lineWidth: 8)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .onAppear { pulsandoBorde = true }
-            .onDisappear { pulsandoBorde = false }
-            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulsandoBorde)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// MARK: - 11  TAB RUTAS
+// MARK: - 10  TAB RUTAS
 // ═══════════════════════════════════════════════════════════════════
 
 struct RutasTab: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.fontScale) var fs
-    @Environment(\.loc) var loc
     @StateObject private var speech = SpeechManager()
 
     @State private var textoBusqueda = ""
@@ -2271,10 +1620,10 @@ struct RutasTab: View {
         ZStack(alignment: .bottom) {
             BB.headerGrad.ignoresSafeArea(edges: .top)
             VStack(spacing: 0) {
-                GlobalTopBar(titulo: loc.t("topbar_title_rutas")).frame(height: 88)
+                GlobalTopBar(titulo: appState.t("Rutas")).frame(height: 88)
                 SearchBarVozView(
                     texto: $textoBusqueda,
-                    placeholder: loc.t("rutas_buscar_placeholder"),
+                    placeholder: appState.t("Buscar línea o código..."),
                     speech: speech, fontSize: 15 * fs
                 )
                 .padding(.horizontal, 16).padding(.bottom, 18)
@@ -2299,13 +1648,12 @@ struct RutasTab: View {
 struct NotisTab: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.fontScale) var fs
-    @Environment(\.loc) var loc
 
     var body: some View {
         ZStack(alignment: .top) {
             BB.fondoGris.ignoresSafeArea()
             VStack(spacing: 0) {
-                GlobalTopBar(titulo: loc.t("topbar_title_notis"))
+                GlobalTopBar(titulo: appState.t("Avisos"))
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach([TipoAviso.alerta, .desvio, .informacion, .mantenimiento],
@@ -2326,11 +1674,8 @@ struct NotisTab: View {
                             withAnimation { appState.viajeActivo.toggle() }
                         } label: {
                             Label(
-                                appState.viajeActivo
-                                ? loc.t("notis_demo_terminar")
-                                : loc.t("notis_demo_simular"),
-                                systemImage: appState.viajeActivo
-                                ? "stop.circle" : "play.circle.fill"
+                                appState.t(appState.viajeActivo ? "Terminar viaje demo" : "Simular viaje activo"),
+                                systemImage: appState.viajeActivo ? "stop.circle" : "play.circle.fill"
                             )
                             .font(.system(size: 13 * fs, weight: .semibold))
                             .foregroundColor(appState.viajeActivo ? BB.rojo : BB.verde)
@@ -2349,24 +1694,20 @@ struct NotisTab: View {
 }
 
 struct ViajeActivoBannerView: View {
+    @EnvironmentObject var appState: AppState
     @Binding var camionPorLlegar: Bool
-    @Environment(\.loc) var loc
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "bus.fill").font(.system(size: 26)).foregroundColor(.white)
             VStack(alignment: .leading, spacing: 3) {
-                Text(loc.t("viaje_activo_label") + " — RC14 LABÁ")
+                Text(appState.t("Viaje activo — RC14 LABÁ"))
                     .font(.system(size: 15, weight: .black)).foregroundColor(.white)
-                Text("Tu camión \(loc.t("viaje_activo_llega_en")) ~3 \(loc.t("viaje_activo_min"))")
+                Text(appState.t("Tu camión llega en ~3 min"))
                     .font(.system(size: 13)).foregroundColor(.white.opacity(0.85))
             }
             Spacer()
-            Button {
-                let activarAviso = !camionPorLlegar
-                withAnimation(.spring()) { camionPorLlegar = activarAviso }
-                if !activarAviso { AppHaptics.selection() }
-            } label: {
-                Text(camionPorLlegar ? loc.t("viaje_activo_on") : loc.t("viaje_activo_alertar"))
+            Button { withAnimation(.spring()) { camionPorLlegar.toggle() } } label: {
+                Text(camionPorLlegar ? "🔔 ON" : appState.t("Alertar"))
                     .font(.system(size: 12, weight: .black)).foregroundColor(BB.vino)
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(Color.white).cornerRadius(10)
@@ -2377,18 +1718,17 @@ struct ViajeActivoBannerView: View {
         .padding(.horizontal, 14)
         .shadow(color: BB.vino.opacity(0.45), radius: 8, y: 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(loc.t("viaje_activo_a11y"))
+        .accessibilityLabel(appState.t("Viaje activo. RC14 LABÁ llega en 3 minutos."))
     }
 }
 
 struct AvisoChipView: View {
+    @EnvironmentObject var appState: AppState
     let tipo: TipoAviso
-    @Environment(\.loc) var loc
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: tipo.iconoBN).font(.system(size: 13, weight: .black)).foregroundColor(.black)
-            Text(loc.t(tipo.etiquetaKey))
-                .font(.system(size: 12, weight: .black)).foregroundColor(.black)
+            Text(appState.t(tipo.etiqueta)).font(.system(size: 12, weight: .black)).foregroundColor(.black)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(Color.white)
@@ -2398,16 +1738,16 @@ struct AvisoChipView: View {
 }
 
 struct AvisoCardView: View {
+    @EnvironmentObject var appState: AppState
     let aviso: Aviso
     let fontSize: CGFloat
     @State private var expandido = false
-    @Environment(\.loc) var loc
 
     var fechaTexto: String {
         let d = Calendar.current.dateComponents([.hour, .minute], from: aviso.fecha, to: Date())
-        if let h = d.hour,  h > 0 { return loc.t("aviso_hace_horas", h) }
-        if let m = d.minute, m > 0 { return loc.t("aviso_hace_minutos", m) }
-        return loc.t("aviso_ahora")
+        if let h = d.hour, h > 0 { return appState.idioma == "Español" || appState.idioma == "Zapoteco (Sierra Sur)" ? "Hace \(h)h" : "\(h)h ago" }
+        if let m = d.minute, m > 0 { return appState.idioma == "Español" || appState.idioma == "Zapoteco (Sierra Sur)" ? "Hace \(m) min" : "\(m) min ago" }
+        return appState.t("Ahora")
     }
 
     var body: some View {
@@ -2428,13 +1768,13 @@ struct AvisoCardView: View {
                         }
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
-                                Text(loc.t(aviso.tipo.etiquetaKey))
+                                Text(appState.t(aviso.tipo.etiqueta))
                                     .font(.system(size: 9, weight: .black)).foregroundColor(.white)
                                     .padding(.horizontal, 7).padding(.vertical, 3)
                                     .background(aviso.tipo.color).cornerRadius(5)
                                 Text(fechaTexto).font(.system(size: 11)).foregroundColor(BB.grisMedio)
                             }
-                            Text(aviso.titulo)
+                            Text(appState.t(aviso.titulo))
                                 .font(.system(size: fontSize * 14, weight: .bold))
                                 .foregroundColor(BB.grisOscuro).multilineTextAlignment(.leading)
                             HStack(spacing: 5) {
@@ -2454,7 +1794,7 @@ struct AvisoCardView: View {
                 .buttonStyle(.plain)
             }
             if expandido {
-                Text(aviso.descripcion)
+                Text(appState.t(aviso.descripcion))
                     .font(.system(size: fontSize * 13)).foregroundColor(BB.grisOscuro)
                     .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(BB.fondoRosa)
@@ -2463,7 +1803,7 @@ struct AvisoCardView: View {
         }
         .background(Color.white).cornerRadius(14)
         .shadow(color: BB.primary.opacity(0.07), radius: 6, y: 3)
-        .accessibilityLabel("\(loc.t(aviso.tipo.etiquetaKey)): \(aviso.titulo). \(aviso.descripcion)")
+        .accessibilityLabel("\(appState.t(aviso.tipo.etiqueta)): \(appState.t(aviso.titulo)). \(appState.t(aviso.descripcion))")
     }
 }
 
@@ -2474,7 +1814,6 @@ struct AvisoCardView: View {
 struct PerfilTab: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.fontScale) var fs
-    @Environment(\.loc) var loc
 
     let usuario = DatosMock.usuario
     @State private var indicesTarjeta  = 0
@@ -2488,7 +1827,7 @@ struct PerfilTab: View {
             }
             .ignoresSafeArea()
             VStack(spacing: 0) {
-                GlobalTopBar(titulo: loc.t("topbar_title_perfil"))
+                GlobalTopBar(titulo: appState.t("Perfil"))
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 24) {
                         seccionIdentidad; seccionTarjetas; seccionWallet; botonSOS; gridAcciones
@@ -2497,18 +1836,18 @@ struct PerfilTab: View {
                 }
             }
         }
-        .alert(loc.t("alert_sos_title"), isPresented: $mostrarSOS) {
-            Button(loc.t("alert_sos_confirm"), role: .destructive) {
+        .alert(appState.t("🚨 Llamada de emergencia"), isPresented: $mostrarSOS) {
+            Button(appState.t("Llamar al 911"), role: .destructive) {
                 if let url = URL(string: "tel://911") { UIApplication.shared.open(url) }
             }
-            Button(loc.t("alert_sos_cancel"), role: .cancel) { }
+            Button(appState.t("Cancelar"), role: .cancel) { }
         } message: {
-            Text(loc.t("alert_sos_message"))
+            Text(appState.t("Se marcará directamente al número de emergencias 911. ¿Confirmas?"))
         }
-        .alert(loc.t("alert_wallet_title"), isPresented: $mostrarWalletOK) {
-            Button(loc.t("alert_wallet_ok"), role: .cancel) { }
+        .alert("Apple Wallet", isPresented: $mostrarWalletOK) {
+            Button(appState.t("Entendido"), role: .cancel) { }
         } message: {
-            Text(loc.t("alert_wallet_message"))
+            Text(appState.t("En producción, aquí se descarga el archivo .pkpass desde el servidor de BinniBus y se abre automáticamente Apple Wallet para agregarlo a tu iPhone."))
         }
     }
 
@@ -2527,8 +1866,7 @@ struct PerfilTab: View {
             HStack(spacing: 6) {
                 Image(systemName: "dollarsign.circle.fill")
                     .font(.system(size: 18)).foregroundColor(BB.amarillo)
-                Text(usuario.saldo.map { String(format: "$%.2f MXN", $0) }
-                     ?? loc.t("perfil_saldo_consultando"))
+                Text(usuario.saldo.map { String(format: "$%.2f MXN", $0) } ?? appState.t("Consultando..."))
                     .font(.system(size: 18 * fs, weight: .black, design: .rounded)).foregroundColor(.white)
             }
             .padding(.horizontal, 22).padding(.vertical, 10)
@@ -2562,20 +1900,19 @@ struct PerfilTab: View {
             if PKAddPassesViewController.canAddPasses() {
                 PKAddPassButtonRepresentable { agregarAWallet() }
                     .frame(height: 50).padding(.horizontal, 20)
-                    .accessibilityLabel(loc.t("perfil_wallet_btn"))
+                    .accessibilityLabel(appState.t("Agregar tarjeta BinniBus a Apple Wallet"))
             } else {
                 Button { mostrarWalletOK = true } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "wallet.pass.fill").font(.system(size: 20, weight: .bold))
-                        Text(loc.t("perfil_wallet_btn"))
-                            .font(.system(size: 16 * fs, weight: .black))
+                        Text(appState.t("Agregar a Apple Wallet")).font(.system(size: 16 * fs, weight: .black))
                     }
                     .foregroundColor(.white).frame(maxWidth: .infinity).frame(height: 52)
                     .background(Color.black).cornerRadius(14)
                 }
                 .padding(.horizontal, 20)
             }
-            Text(loc.t("perfil_wallet_disponible"))
+            Text(appState.t("Tu tarjeta BinniBus siempre disponible en tu iPhone."))
                 .font(.system(size: 12 * fs)).foregroundColor(BB.grisMedio)
                 .multilineTextAlignment(.center).padding(.horizontal, 30)
         }
@@ -2592,9 +1929,9 @@ struct PerfilTab: View {
             HStack(spacing: 16) {
                 Image(systemName: "sos").font(.system(size: 30, weight: .black))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(loc.t("perfil_sos_btn"))
+                    Text(appState.t("BOTÓN SOS"))
                         .font(.system(size: 20 * fs, weight: .black, design: .rounded))
-                    Text(loc.t("perfil_sos_subtitle"))
+                    Text(appState.t("Llama al número de emergencias"))
                         .font(.system(size: 12 * fs)).opacity(0.88)
                 }
                 Spacer()
@@ -2606,19 +1943,15 @@ struct PerfilTab: View {
             .shadow(color: BB.rojo.opacity(0.5), radius: 12, y: 6)
         }
         .padding(.horizontal, 16)
-        .accessibilityLabel(loc.t("a11y_boton_sos"))
+        .accessibilityLabel(appState.t("Botón SOS. Llama directamente al 911."))
     }
 
     private var gridAcciones: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
-            AccionRapidaView(icono: "creditcard.fill",
-                             titulo: loc.t("perfil_accion_tarjetas"),  activa: true)  { }
-            AccionRapidaView(icono: "arrow.clockwise.circle.fill",
-                             titulo: loc.t("perfil_accion_movimientos"), activa: true)  { }
-            AccionRapidaView(icono: "person.text.rectangle.fill",
-                             titulo: loc.t("perfil_accion_pqr"),         activa: false) { }
-            AccionRapidaView(icono: "gearshape.fill",
-                             titulo: loc.t("perfil_accion_config"),      activa: false) { }
+            AccionRapidaView(icono: "creditcard.fill",             titulo: appState.t("Mis\nTarjetas"),  activa: true)  { }
+            AccionRapidaView(icono: "arrow.clockwise.circle.fill", titulo: appState.t("Movimientos"),    activa: true)  { }
+            AccionRapidaView(icono: "person.text.rectangle.fill",  titulo: "PQR",            activa: false) { }
+            AccionRapidaView(icono: "gearshape.fill",              titulo: appState.t("Configuración"),  activa: false) { }
         }
         .padding(.horizontal, 16)
     }
@@ -2645,11 +1978,11 @@ struct PKAddPassButtonRepresentable: UIViewRepresentable {
 // ═══════════════════════════════════════════════════════════════════
 
 struct SearchBarVozView: View {
+    @EnvironmentObject var appState: AppState
     @Binding var texto: String
     let placeholder: String
     @ObservedObject var speech: SpeechManager
     var fontSize: CGFloat = 15
-    @Environment(\.loc) var loc
 
     var body: some View {
         HStack(spacing: 8) {
@@ -2672,9 +2005,7 @@ struct SearchBarVozView: View {
                         .animation(.easeInOut(duration: 0.25), value: speech.estaEscuchando)
                 }
             }
-            .accessibilityLabel(speech.estaEscuchando
-                                ? loc.t("voice_stop_a11y")
-                                : loc.t("voice_start_a11y"))
+            .accessibilityLabel(appState.t(speech.estaEscuchando ? "Detener dictado" : "Buscar por voz"))
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(Color.white.opacity(0.95)).cornerRadius(20)
@@ -2684,9 +2015,9 @@ struct SearchBarVozView: View {
 }
 
 struct ParadaPopupView: View {
+    @EnvironmentObject var appState: AppState
     let parada: Parada
     let onDismiss: () -> Void
-    @Environment(\.loc) var loc
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2695,18 +2026,12 @@ struct ParadaPopupView: View {
                 .padding(.top, 16).padding(.horizontal, 16)
 
             if parada.rutasProximas.isEmpty {
-                Text(loc.t("parada_popup_sin_info"))
+                Text(appState.t("Sin información en tiempo real"))
                     .font(.system(size: 13)).foregroundColor(.white.opacity(0.6)).padding(16)
             } else {
-                HStack {
-                    Text(loc.t("parada_popup_col_linea"))
-                    Spacer()
-                    Text(loc.t("parada_popup_col_nombre"))
-                    Spacer()
-                    Text(loc.t("parada_popup_col_min"))
-                }
-                .font(.system(size: 13, weight: .medium)).foregroundColor(BB.popupAccent)
-                .padding(.horizontal, 16).padding(.top, 10)
+                HStack { Text(appState.t("Línea")); Spacer(); Text(appState.t("Nombre")); Spacer(); Text(appState.t("min")) }
+                    .font(.system(size: 13, weight: .medium)).foregroundColor(BB.popupAccent)
+                    .padding(.horizontal, 16).padding(.top, 10)
                 Divider().background(Color.white.opacity(0.2)).padding(.horizontal, 16)
                 ForEach(parada.rutasProximas) { r in
                     HStack {
@@ -2714,18 +2039,15 @@ struct ParadaPopupView: View {
                             .foregroundColor(.white).frame(width: 50, alignment: .leading)
                         Text(r.nombreLinea).font(.system(size: 14)).foregroundColor(.white)
                         Spacer()
-                        Text("\(r.minutosLlegada)")
-                            .font(.system(size: 18, weight: .bold)).foregroundColor(.white)
+                        Text("\(r.minutosLlegada)").font(.system(size: 18, weight: .bold)).foregroundColor(.white)
                     }
                     .padding(.horizontal, 16).padding(.vertical, 8)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                LeyendaEstadoRow(color: BB.servicioActivo,
-                                 texto: loc.t("parada_popup_leyenda_activo"))
-                LeyendaEstadoRow(color: .white,
-                                 texto: loc.t("parada_popup_leyenda_programado"))
+                LeyendaEstadoRow(color: BB.servicioActivo, texto: appState.t("Servicio activo"))
+                LeyendaEstadoRow(color: .white,            texto: appState.t("Servicio programado"))
             }
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
         }
@@ -2789,7 +2111,6 @@ struct FloatingBtnView: View {
 struct BannerLineaActivaView: View {
     let linea: Linea
     let onCerrar: () -> Void
-    @Environment(\.loc) var loc
     var body: some View {
         HStack(spacing: 12) {
             LineaBadgeView(codigo: linea.codigo, color: linea.color)
@@ -2801,7 +2122,6 @@ struct BannerLineaActivaView: View {
             Button(action: onCerrar) {
                 Image(systemName: "xmark.circle.fill").font(.system(size: 22)).foregroundColor(BB.grisUI)
             }
-            .accessibilityLabel(loc.t("mapa_linea_activa_close_a11y"))
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.white)
@@ -2810,380 +2130,23 @@ struct BannerLineaActivaView: View {
     }
 }
 
-struct LineaIconoView: View {
-    let icono: String
-    let color: Color
-    var size: CGFloat = 60
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.22)
-                .fill(color.opacity(0.10))
-                .frame(width: size, height: size)
-
-            Group {
-                switch icono {
-                case "RutaFlor": IconoFlor(color: color, size: size * 0.62)
-                case "RutaSol": IconoSol(color: color, size: size * 0.62)
-                case "RutaMonte": IconoMonte(color: color, size: size * 0.62)
-                case "RutaPalma": IconoPalma(color: color, size: size * 0.62)
-                case "RutaArbol": IconoArbol(color: color, size: size * 0.62)
-                case "RutaSemilla": IconoSemilla(color: color, size: size * 0.62)
-                case "RutaHoja": IconoHoja(color: color, size: size * 0.62)
-                default:
-                    Image(systemName: "bus.fill")
-                        .font(.system(size: size * 0.38, weight: .bold))
-                        .foregroundColor(color)
-                }
-            }
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoFlor: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let rect = CGRect(origin: .zero, size: canvasSize)
-            let cx = rect.midX
-            let cy = rect.midY
-            let radius = rect.width * 0.34
-            let petalRadius = rect.width * 0.16
-            let stroke = rect.width * 0.09
-
-            for index in 0..<6 {
-                let angle = CGFloat(index) * .pi / 3
-                let px = cx + radius * cos(angle)
-                let py = cy + radius * sin(angle)
-                var petal = Path()
-                petal.addEllipse(in: CGRect(x: px - petalRadius * 0.9,
-                                            y: py - petalRadius,
-                                            width: petalRadius * 1.8,
-                                            height: petalRadius * 2))
-                ctx.fill(petal, with: .color(color.opacity(0.18)))
-                ctx.stroke(petal, with: .color(color), lineWidth: stroke)
-            }
-
-            var center = Path()
-            center.addEllipse(in: CGRect(x: cx - petalRadius * 0.82,
-                                         y: cy - petalRadius * 0.82,
-                                         width: petalRadius * 1.64,
-                                         height: petalRadius * 1.64))
-            ctx.fill(center, with: .color(color.opacity(0.25)))
-            ctx.stroke(center, with: .color(color), lineWidth: stroke)
-
-            var dot = Path()
-            dot.addEllipse(in: CGRect(x: cx - petalRadius * 0.28,
-                                      y: cy - petalRadius * 0.28,
-                                      width: petalRadius * 0.56,
-                                      height: petalRadius * 0.56))
-            ctx.fill(dot, with: .color(color))
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoSol: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let rect = CGRect(origin: .zero, size: canvasSize)
-            let cx = rect.midX
-            let cy = rect.midY
-            let circleRadius = rect.width * 0.24
-            let rayRadius = rect.width * 0.44
-            let stroke = rect.width * 0.09
-
-            for index in 0..<8 {
-                let angle = CGFloat(index) * .pi / 4
-                var ray = Path()
-                ray.move(to: CGPoint(x: cx + (circleRadius + rect.width * 0.07) * cos(angle),
-                                     y: cy + (circleRadius + rect.width * 0.07) * sin(angle)))
-                ray.addLine(to: CGPoint(x: cx + rayRadius * cos(angle),
-                                        y: cy + rayRadius * sin(angle)))
-                ctx.stroke(ray, with: .color(color), lineWidth: stroke)
-            }
-
-            var circle = Path()
-            circle.addEllipse(in: CGRect(x: cx - circleRadius, y: cy - circleRadius,
-                                         width: circleRadius * 2, height: circleRadius * 2))
-            ctx.fill(circle, with: .color(color.opacity(0.18)))
-            ctx.stroke(circle, with: .color(color), lineWidth: stroke)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoMonte: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let w = canvasSize.width
-            let h = canvasSize.height
-            let stroke = w * 0.09
-
-            var back = Path()
-            back.move(to: CGPoint(x: w * 0.38, y: h * 0.82))
-            back.addLine(to: CGPoint(x: w * 0.68, y: h * 0.28))
-            back.addLine(to: CGPoint(x: w * 0.98, y: h * 0.82))
-            back.closeSubpath()
-            ctx.fill(back, with: .color(color.opacity(0.14)))
-            ctx.stroke(back, with: .color(color), lineWidth: stroke * 0.85)
-
-            var front = Path()
-            front.move(to: CGPoint(x: w * 0.02, y: h * 0.82))
-            front.addLine(to: CGPoint(x: w * 0.40, y: h * 0.18))
-            front.addLine(to: CGPoint(x: w * 0.78, y: h * 0.82))
-            front.closeSubpath()
-            ctx.fill(front, with: .color(color.opacity(0.22)))
-            ctx.stroke(front, with: .color(color), lineWidth: stroke)
-
-            var snow = Path()
-            snow.move(to: CGPoint(x: w * 0.40, y: h * 0.18))
-            snow.addLine(to: CGPoint(x: w * 0.28, y: h * 0.42))
-            snow.addLine(to: CGPoint(x: w * 0.52, y: h * 0.42))
-            snow.closeSubpath()
-            ctx.fill(snow, with: .color(color.opacity(0.40)))
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoPalma: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let w = canvasSize.width
-            let h = canvasSize.height
-            let stroke = w * 0.09
-
-            var trunk = Path()
-            trunk.move(to: CGPoint(x: w * 0.48, y: h * 0.88))
-            trunk.addCurve(to: CGPoint(x: w * 0.58, y: h * 0.28),
-                           control1: CGPoint(x: w * 0.44, y: h * 0.68),
-                           control2: CGPoint(x: w * 0.62, y: h * 0.48))
-            ctx.stroke(trunk, with: .color(color), lineWidth: stroke)
-
-            let leaves: [(CGPoint, CGPoint, CGPoint)] = [
-                (CGPoint(x: w * 0.58, y: h * 0.28), CGPoint(x: w * 0.20, y: h * 0.10), CGPoint(x: w * 0.38, y: h * 0.22)),
-                (CGPoint(x: w * 0.58, y: h * 0.28), CGPoint(x: w * 0.92, y: h * 0.08), CGPoint(x: w * 0.80, y: h * 0.26)),
-                (CGPoint(x: w * 0.58, y: h * 0.28), CGPoint(x: w * 0.36, y: h * 0.44), CGPoint(x: w * 0.42, y: h * 0.30)),
-                (CGPoint(x: w * 0.58, y: h * 0.28), CGPoint(x: w * 0.84, y: h * 0.40), CGPoint(x: w * 0.76, y: h * 0.28)),
-                (CGPoint(x: w * 0.58, y: h * 0.28), CGPoint(x: w * 0.58, y: h * 0.02), CGPoint(x: w * 0.50, y: h * 0.18))
-            ]
-
-            for (start, end, control) in leaves {
-                var leaf = Path()
-                leaf.move(to: start)
-                leaf.addQuadCurve(to: end, control: control)
-                ctx.stroke(leaf, with: .color(color), lineWidth: stroke * 0.85)
-            }
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoArbol: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let w = canvasSize.width
-            let h = canvasSize.height
-            let stroke = w * 0.09
-
-            var trunk = Path()
-            trunk.move(to: CGPoint(x: w * 0.42, y: h * 0.88))
-            trunk.addLine(to: CGPoint(x: w * 0.42, y: h * 0.58))
-            trunk.addLine(to: CGPoint(x: w * 0.58, y: h * 0.58))
-            trunk.addLine(to: CGPoint(x: w * 0.58, y: h * 0.88))
-            trunk.closeSubpath()
-            ctx.fill(trunk, with: .color(color.opacity(0.25)))
-            ctx.stroke(trunk, with: .color(color), lineWidth: stroke * 0.7)
-
-            let crownRadius = w * 0.34
-            var crown = Path()
-            crown.addEllipse(in: CGRect(x: w * 0.5 - crownRadius,
-                                        y: h * 0.08,
-                                        width: crownRadius * 2,
-                                        height: crownRadius * 2))
-            ctx.fill(crown, with: .color(color.opacity(0.20)))
-            ctx.stroke(crown, with: .color(color), lineWidth: stroke)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoSemilla: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let w = canvasSize.width
-            let h = canvasSize.height
-            let stroke = w * 0.09
-
-            var seed = Path()
-            seed.move(to: CGPoint(x: w * 0.50, y: h * 0.10))
-            seed.addCurve(to: CGPoint(x: w * 0.50, y: h * 0.90),
-                          control1: CGPoint(x: w * 0.92, y: h * 0.25),
-                          control2: CGPoint(x: w * 0.92, y: h * 0.75))
-            seed.addCurve(to: CGPoint(x: w * 0.50, y: h * 0.10),
-                          control1: CGPoint(x: w * 0.08, y: h * 0.75),
-                          control2: CGPoint(x: w * 0.08, y: h * 0.25))
-            ctx.fill(seed, with: .color(color.opacity(0.18)))
-            ctx.stroke(seed, with: .color(color), lineWidth: stroke)
-
-            var stem = Path()
-            stem.move(to: CGPoint(x: w * 0.50, y: h * 0.50))
-            stem.addLine(to: CGPoint(x: w * 0.50, y: h * 0.12))
-            ctx.stroke(stem, with: .color(color), lineWidth: stroke * 0.85)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-private struct IconoHoja: View {
-    let color: Color
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { ctx, canvasSize in
-            let w = canvasSize.width
-            let h = canvasSize.height
-            let stroke = w * 0.09
-
-            var leaf = Path()
-            leaf.move(to: CGPoint(x: w * 0.50, y: h * 0.08))
-            leaf.addCurve(to: CGPoint(x: w * 0.92, y: h * 0.56),
-                          control1: CGPoint(x: w * 0.92, y: h * 0.08),
-                          control2: CGPoint(x: w * 0.92, y: h * 0.56))
-            leaf.addCurve(to: CGPoint(x: w * 0.50, y: h * 0.08),
-                          control1: CGPoint(x: w * 0.50, y: h * 0.92),
-                          control2: CGPoint(x: w * 0.08, y: h * 0.56))
-            ctx.fill(leaf, with: .color(color.opacity(0.20)))
-            ctx.stroke(leaf, with: .color(color), lineWidth: stroke)
-
-            var vein = Path()
-            vein.move(to: CGPoint(x: w * 0.50, y: h * 0.08))
-            vein.addCurve(to: CGPoint(x: w * 0.70, y: h * 0.72),
-                          control1: CGPoint(x: w * 0.54, y: h * 0.38),
-                          control2: CGPoint(x: w * 0.66, y: h * 0.56))
-            ctx.stroke(vein, with: .color(color), lineWidth: stroke * 0.75)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
 struct LineaRowView: View {
     let linea: Linea
     let estaSeleccionada: Bool
     var fontSize: CGFloat = 1.0
-
     var body: some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(estaSeleccionada ? linea.color : Color.clear)
-                .frame(width: 4)
-
-            HStack(alignment: .top, spacing: 14) {
-                LineaIconoView(icono: linea.icono, color: linea.color, size: 64)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        Text(linea.codigo)
-                            .font(.system(size: 15 * fontSize, weight: .black, design: .rounded))
-                            .foregroundColor(linea.color)
-                        if !linea.apodo.isEmpty {
-                            Text("\"\(linea.apodo)\"")
-                                .font(.system(size: 14 * fontSize, weight: .bold, design: .rounded))
-                                .foregroundColor(linea.color)
-                        }
-                        Spacer()
-                        if linea.estaEnServicio && linea.busesActivos > 0 {
-                            HStack(spacing: 3) {
-                                Circle().fill(BB.busActivo).frame(width: 8, height: 8)
-                                Text("\(linea.busesActivos)")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(BB.grisUI)
-                                Image(systemName: "bus.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(BB.busActivo)
-                            }
-                        } else {
-                            Image(systemName: "bus.fill")
-                                .font(.system(size: 16))
-                                .foregroundColor(BB.grisUI.opacity(0.35))
-                        }
-                    }
-
-                    Text(linea.rutaCompleta)
-                        .font(.system(size: 12 * fontSize))
-                        .foregroundColor(BB.grisMedio)
-                        .lineLimit(2)
-
-                    HStack(spacing: 10) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "dollarsign.circle")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(BB.grisOscuro.opacity(0.7))
-                            Text("$10")
-                                .font(.system(size: 12 * fontSize, weight: .semibold))
-                                .foregroundColor(BB.grisOscuro.opacity(0.8))
-                        }
-
-                        Image(systemName: "wave.3.right.circle")
-                            .font(.system(size: 13))
-                            .foregroundColor(BB.grisOscuro.opacity(0.7))
-
-                        Divider().frame(height: 12)
-
-                        HStack(spacing: 3) {
-                            Image(systemName: "clock")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(BB.grisOscuro.opacity(0.6))
-                            Text("12 min")
-                                .font(.system(size: 12 * fontSize, weight: .semibold))
-                                .foregroundColor(BB.grisOscuro.opacity(0.8))
-                        }
-
-                        if linea.estaEnServicio {
-                            Image(systemName: "figure.roll")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(BB.azul.opacity(0.75))
-                        }
-                    }
-
-                    if !linea.transbordos.isEmpty {
-                        HStack(spacing: 6) {
-                            Text("Transbordo")
-                                .font(.system(size: 11))
-                                .foregroundColor(BB.grisUI)
-                            ForEach(linea.transbordos, id: \.self) { codigo in
-                                TransbordoBadge(codigo: codigo)
-                            }
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-                .padding(.vertical, 14)
-                .padding(.trailing, 12)
+        HStack(spacing: 14) {
+            LineaBadgeView(codigo: linea.codigo, color: linea.color)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(linea.nombre).font(.system(size: 15 * fontSize, weight: .semibold)).foregroundColor(BB.texto)
+                Text(linea.rutaCompleta).font(.system(size: 12 * fontSize)).foregroundColor(BB.grisUI).lineLimit(2)
             }
-            .padding(.leading, 12)
+            Spacer()
+            BusActivoIndicadorView(cantidad: linea.busesActivos, enServicio: linea.estaEnServicio)
         }
-        .background(estaSeleccionada ? linea.color.opacity(0.06) : Color.white)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(estaSeleccionada ? BB.fondoRosa : Color.white)
+        .overlay(Rectangle().fill(estaSeleccionada ? linea.color : Color.clear).frame(width: 3), alignment: .leading)
         .animation(.easeInOut(duration: 0.2), value: estaSeleccionada)
     }
 }
@@ -3191,49 +2154,16 @@ struct LineaRowView: View {
 struct LineaBadgeView: View {
     let codigo: String
     let color: Color
-
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(color.opacity(0.15))
+            RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.15))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(color, lineWidth: 1.5))
                 .frame(width: 58, height: 44)
             VStack(spacing: 2) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(color)
-                Text(codigo)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(color)
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 9, weight: .bold)).foregroundColor(color)
+                Text(codigo).font(.system(size: 12, weight: .bold)).foregroundColor(color)
             }
         }
-    }
-}
-
-private struct TransbordoBadge: View {
-    let codigo: String
-
-    private var color: Color {
-        switch codigo {
-        case "RC14": return Color(hex: "#D81B8A")
-        case "RA03": return Color(hex: "#F57C00")
-        case "RC15": return Color(hex: "#7B1FA2")
-        case "RA17": return Color(hex: "#1E90FF")
-        case "RA19": return Color(hex: "#00796B")
-        case "RC01": return Color(hex: "#8B1A3E")
-        case "RA01": return Color(hex: "#388E3C")
-        default: return BB.grisUI
-        }
-    }
-
-    var body: some View {
-        Text(codigo)
-            .font(.system(size: 10, weight: .black))
-            .foregroundColor(.white)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color)
-            .cornerRadius(6)
     }
 }
 
@@ -3259,6 +2189,7 @@ struct BusActivoIndicadorView: View {
 }
 
 struct TarjetaVirtualView: View {
+    @EnvironmentObject var appState: AppState
     let tarjeta: Tarjeta
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -3278,7 +2209,7 @@ struct TarjetaVirtualView: View {
                     Text(tarjeta.codigoFormateado)
                         .font(.system(size: 15, weight: .regular, design: .monospaced))
                         .foregroundColor(Color.white.opacity(0.9))
-                    Text("CÓDIGO").font(.system(size: 10, weight: .bold))
+                    Text(appState.t("CÓDIGO")).font(.system(size: 10, weight: .bold))
                         .foregroundColor(Color.white.opacity(0.6)).kerning(2)
                 }
                 .padding(.leading, 20).padding(.bottom, 16)
@@ -3329,10 +2260,6 @@ struct CurvaDecorativa: Shape {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// MARK: - 13B  DRAWER LATERAL
-// ═══════════════════════════════════════════════════════════════════
-
 struct DrawerOverlayView: View {
     @Binding var isOpen: Bool
     var body: some View {
@@ -3349,38 +2276,28 @@ struct DrawerOverlayView: View {
 }
 
 struct DrawerMenuView: View {
+    @EnvironmentObject var appState: AppState
     @Binding var isOpen: Bool
-    @Environment(\.loc) var loc
-
-    // Lista calculada: se re-traduce automáticamente al cambiar idioma
-    private var items: [(icono: String, titulo: String)] {[
-        ("map",                        loc.t("drawer_item_mapa")),
-        ("map.fill",                   loc.t("drawer_item_rutas")),
-        ("arrow.triangle.swap",        loc.t("drawer_item_planea")),
-        ("person.crop.circle",         loc.t("drawer_item_perfil")),
-        ("gearshape",                  loc.t("drawer_item_config")),
-        ("star",                       loc.t("drawer_item_favoritos")),
-    ]}
-    private let indiceActivo = 0   // Mapa siempre activo
-
+    let items: [(String, String)] = [
+        ("map",                        "Mapa"),
+        ("map.fill",                   "Rutas"),
+        ("arrow.triangle.swap",        "Planea tu viaje"),
+        ("person.crop.circle",         "Perfil"),
+        ("gearshape",                  "Configuración"),
+        ("star",                       "Favoritos"),
+    ]
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-
-            // ── Nuevo logotipo TPI ────────────────────────────────
-            TPILogoView(size: 80)
+            BinniBusLogoView(size: 80)
                 .frame(maxWidth: .infinity).padding(.vertical, 24).padding(.top, 40)
-
             Divider()
-            ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                DrawerMenuRow(icono: item.icono,
-                              titulo: item.titulo,
-                              activo: idx == indiceActivo)
+            ForEach(items, id: \.0) { item in
+                DrawerMenuRow(icono: item.0, titulo: appState.t(item.1), activo: item.1 == "Mapa")
             }
             Spacer()
             DrawerMenuRow(icono: "rectangle.portrait.and.arrow.right",
-                          titulo: loc.t("drawer_item_cerrar_sesion"),
-                          activo: false)
-            Text(loc.t("app_version"))
+                         titulo: appState.t("Cerrar sesión"), activo: false)
+            Text("BinniBus v1.1 · CLIHC 2026")
                 .font(.system(size: 11)).foregroundColor(BB.grisUI)
                 .padding(.horizontal, 20).padding(.bottom, 32)
         }
@@ -3407,83 +2324,35 @@ struct DrawerMenuRow: View {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MARK: - 14  LOGO TPI  (reemplaza BinniBusLogoView)
+// MARK: - 14  LOGO BINNIBUS
 // ═══════════════════════════════════════════════════════════════════
 
-// Paleta del logotipo TPI
-private enum TPI {
-    static let azul    = Color(hex: "#607DAB")   // "Transporte"
-    static let naranja = Color(hex: "#ECB043")   // "Público"
-    static let teal    = Color(hex: "#0097A7")   // "Inclusivo"
-    static let linea   = Color(hex: "#E64A19")   // línea decorativa
-}
-
-/// Logotipo completo de dos filas + línea decorativa.
-/// Úsalo en el Drawer (size: 80) y el Onboarding (size: 110).
-struct TPILogoView: View {
+struct BinniBusLogoView: View {
     var size: CGFloat = 64
-
-    private var fPrincipal: CGFloat { size * 0.28 }
-    private var fInclusivo: CGFloat { size * 0.25 }
-    private var gLinea:     CGFloat { size * 0.045 }
-    private var aLinea:     CGFloat { size * 1.6 }
-    private var espV:       CGFloat { size * 0.05 }
-
+    private let letras: [(String, Color)] = [
+        ("B", BB.azul), ("i", BB.naranja), ("n", BB.rojo),
+        ("n", BB.rosa),  ("i", BB.morado),  ("B", BB.azul),
+        ("u", BB.verde), ("s", BB.teal),
+    ]
     var body: some View {
-        VStack(alignment: .trailing, spacing: 0) {
-
-            // Fila 1: "Transporte  Público"
-            HStack(alignment: .center, spacing: size * 0.09) {
-                sticker("Transporte", color: TPI.azul,    font: fPrincipal)
-                sticker("Público",    color: TPI.naranja, font: fPrincipal)
+        ZStack {
+            Circle().fill(BB.amarillo).frame(width: size, height: size)
+            Circle()
+                .strokeBorder(
+                    AngularGradient(colors: [BB.azul, BB.naranja, BB.rojo, BB.verde, BB.teal, BB.azul],
+                                   center: .center),
+                    lineWidth: size * 0.04)
+                .frame(width: size * 0.93, height: size * 0.93)
+            Circle().fill(BB.primary).frame(width: size * 0.88, height: size * 0.88)
+            HStack(spacing: 0) {
+                ForEach(letras.indices, id: \.self) { i in
+                    Text(letras[i].0)
+                        .font(.system(size: size * 0.18, weight: .black, design: .rounded))
+                        .foregroundColor(letras[i].1)
+                }
             }
-
-            // Línea decorativa naranja-roja
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white)
-                    .frame(width: aLinea + gLinea * 2, height: gLinea + gLinea * 2)
-                Capsule()
-                    .fill(TPI.linea)
-                    .frame(width: aLinea, height: gLinea)
-                    .padding(.leading, gLinea)
-            }
-            .padding(.top, espV * 0.4)
-            .padding(.bottom, espV)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-
-            // Fila 2: "Inclusivo"
-            sticker("Inclusivo", color: TPI.teal, font: fInclusivo)
         }
-        .fixedSize()
-    }
-
-    /// Texto con contorno blanco multicapa → efecto "sticker recortado"
-    @ViewBuilder
-    private func sticker(_ t: String, color: Color, font: CGFloat) -> some View {
-        Text(t)
-            .font(.system(size: font, weight: .black, design: .rounded))
-            .foregroundColor(color)
-            .shadow(color: .white, radius: 0, x: -1.5, y: -1.5)
-            .shadow(color: .white, radius: 0, x:  1.5, y: -1.5)
-            .shadow(color: .white, radius: 0, x: -1.5, y:  1.5)
-            .shadow(color: .white, radius: 0, x:  1.5, y:  1.5)
-            .shadow(color: .white, radius: 1.5)
-    }
-}
-
-/// Versión abreviada "T P I" para la TopBar (espacio reducido).
-struct TPILogoCompactView: View {
-    var size: CGFloat = 36
-    var body: some View {
-        HStack(alignment: .lastTextBaseline, spacing: size * 0.07) {
-            Text("T").foregroundColor(TPI.azul)
-            Text("P").foregroundColor(TPI.naranja)
-            Text("I").foregroundColor(TPI.teal)
-        }
-        .font(.system(size: size * 0.54, weight: .black, design: .rounded))
-        .shadow(color: .white, radius: 1)
-        .fixedSize()
+        .frame(width: size, height: size)
     }
 }
 
@@ -3494,11 +2363,9 @@ struct TPILogoCompactView: View {
 struct OnboardingView: View {
     @Binding var mostrar: Bool
     @State private var paso = 0
-    @Environment(\.loc) var loc
 
-    // Pasos calculados: se re-traducen al cambiar idioma
     private let pasos: [(emoji: String, titulo: String, sub: String)] = [
-        ("🚌", "¡Bienvenido al sistema de transporte inclusivo!", "A tu guía de transporte en Oaxaca"),
+        ("🚌", "¡Bienvenido a\nBinniBus!", "Tu guía de transporte en Oaxaca"),
         ("📍", "Paradas cercanas",           "Encuentra la ruta más cerca de ti"),
         ("🔔", "Sin sorpresas",              "Recibe avisos de desvíos y retrasos"),
         ("♿️", "Para todos",                "Diseñado para adultos mayores, turistas y tú"),
@@ -3509,12 +2376,8 @@ struct OnboardingView: View {
             BB.headerGrad.ignoresSafeArea()
             PatronPuntosBG()
             VStack(spacing: 0) {
-
-                // Nuevo logotipo TPI
-                TPILogoView(size: 110)
-                    .padding(.top, 60)
+                BinniBusLogoView(size: 110).padding(.top, 60)
                     .shadow(color: .black.opacity(0.3), radius: 20)
-
                 Spacer()
                 VStack(spacing: 20) {
                     Text(pasos[paso].emoji).font(.system(size: 76))
@@ -3529,7 +2392,6 @@ struct OnboardingView: View {
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal:   .move(edge: .leading).combined(with: .opacity)))
-
                 Spacer()
                 HStack(spacing: 10) {
                     ForEach(0..<pasos.count, id: \.self) { i in
